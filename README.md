@@ -11,6 +11,7 @@ An automated tool for quantizing Large Language Models using AMD Quark.
 - **Flexible Calibration Data**: Supports HuggingFace datasets or local data
 - **Memory Efficient Mode**: Supports file-to-file quantization for limited GPU memory
 - **Layer-wise Quantization**: GPU-only quantization with CPU weight offloading for large models
+- **Dequantization**: Convert quantized models back to BF16/FP16 for re-quantization or deployment
 - **NVIDIA and AMD ROCm Support**: Works with both CUDA and ROCm backends
 
 ## Installation
@@ -151,6 +152,25 @@ python3 -m quanto \
     --precision int4 \
     --exclude_layers lm_head model.layers.31.*
 ```
+
+### Dequantization (INT4 → BF16/FP16)
+
+Convert a quantized model back to floating point for re-quantization to a different format:
+
+```bash
+# Dequantize INT4 model to BF16
+python3 -m quanto --dequantize \
+    --model_path ./quantized/qwen3-32b-int4 \
+    --output_dir ./dequantized/qwen3-32b-bf16
+
+# Then re-quantize to FP8 for data center GPUs
+python3 -m quanto \
+    --model_path ./dequantized/qwen3-32b-bf16 \
+    --output_dir ./quantized/qwen3-32b-fp8 \
+    --precision fp8
+```
+
+Supported dequantization output formats: `bf16`, `fp16`, `fp32`
 
 ## Command Line Options
 
