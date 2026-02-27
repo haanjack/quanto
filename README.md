@@ -222,4 +222,6 @@ Example `quantization_result.json`:
 
 ## License
 
-This tool uses AMD Quark for quantization. See Quark's license for details.
+This project is licensed under the [MIT License](LICENSE).
+
+This tool uses AMD Quark for quantization. See [Quark's license](https://github.com/AMD-AIG-AIMA/Quark) for details.
