@@ -1,0 +1,31 @@
+# Requirements for NVIDIA CUDA environment
+# Install with: pip install -r requirements-nvidia.txt
+
+# Core dependencies
+torch>=2.0.0
+transformers>=4.40.0
+accelerate>=0.30.0
+datasets>=2.18.0
+safetensors>=0.4.0
+
+# Quark and quantization dependencies
+onnx>=1.16.0
+onnxslim>=0.1.0
+onnxscript>=0.1.0
+
+# Tokenization
+sentencepiece>=0.2.0
+tiktoken>=0.6.0
+zstandard>=0.22.0
+
+# Evaluation dependencies
+nltk>=3.8.0
+lm-eval>=0.4.0
+evaluate>=0.4.0
+scikit-learn>=1.4.0
+
+# Utilities
+tqdm>=4.66.0
+rich>=13.0.0
+pyyaml>=6.0
+pydantic>=2.0.0

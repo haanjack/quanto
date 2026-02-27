@@ -1,0 +1,81 @@
+# Pre-built Docker image for NVIDIA CUDA quantization
+# This image includes Quark and all dependencies pre-installed
+# Build: docker build -f Dockerfile.nvidia.prebuilt -t haanjack/quanto:26.02-cuda .
+# Push: docker push haanjack/quanto:26.02-cuda
+#
+# Run: docker run --gpus all \
+#          -v ~/models:/models -v ~/datasets:/datasets -v $(pwd):/workspace -w /workspace \
+#          haanjack/quanto:26.02-cuda python3 -m quanto ...
+
+FROM nvidia/cuda:12.1.0-devel-ubuntu22.04
+
+LABEL maintainer="haanjack"
+LABEL description="Pre-built Docker image for NVIDIA CUDA LLM quantization with Quark"
+LABEL version="26.02-cuda"
+
+# Prevent interactive prompts
+ENV DEBIAN_FRONTEND=noninteractive
+
+# Install system dependencies
+RUN apt-get update && apt-get install -y --no-install-recommends \
+    python3 \
+    python3-pip \
+    python3-dev \
+    git \
+    build-essential \
+    && rm -rf /var/lib/apt/lists/*
+
+# Set python3 as default
+RUN ln -sf /usr/bin/python3 /usr/bin/python
+
+# Upgrade pip
+RUN pip install --upgrade pip setuptools wheel
+
+# Install PyTorch with CUDA support (use 2.4+ for compatibility with Quark)
+RUN pip install torch==2.4.0 --index-url https://download.pytorch.org/whl/cu121
+
+# Install core Python dependencies
+RUN pip install \
+    transformers>=4.40.0 \
+    accelerate>=0.30.0 \
+    datasets>=2.18.0 \
+    safetensors>=0.4.0 \
+    sentencepiece>=0.2.0 \
+    tiktoken>=0.6.0 \
+    zstandard>=0.22.0
+
+# Install quantization dependencies
+RUN pip install \
+    onnx>=1.16.0 \
+    onnxslim>=0.1.0 \
+    onnxscript>=0.1.0
+
+# Install evaluation dependencies
+RUN pip install \
+    nltk>=3.8.0 \
+    lm-eval>=0.4.0 \
+    evaluate>=0.4.0 \
+    scikit-learn>=1.4.0
+
+# Install utilities
+RUN pip install \
+    tqdm>=4.66.0 \
+    rich>=13.0.0 \
+    pyyaml>=6.0 \
+    pydantic>=2.0.0
+
+# Copy quark source and install
+COPY quark/ /tmp/quark/
+RUN pip install /tmp/quark && rm -rf /tmp/quark
+
+# Pre-compile Quark kernels by running a simple import
+RUN python3 -c "from quark.torch import ModelQuantizer; print('Quark ready')"
+
+# Set working directory
+WORKDIR /workspace
+
+# Copy the quanto module
+COPY quanto/ /workspace/quanto/
+
+# Default command
+CMD ["python3", "-m", "quanto", "--help"]

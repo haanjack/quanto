@@ -1,0 +1,62 @@
+# Dockerfile for NVIDIA CUDA environment
+# Build: docker build -f Dockerfile.nvidia -t quanto:nvidia .
+# Run: docker run --gpus all -v ~/models:/models -v ~/datasets:/datasets -v $(pwd):/workspace -w /workspace quanto:nvidia
+
+FROM nvidia/cuda:12.1-devel-ubuntu22.04
+
+# Prevent interactive prompts
+ENV DEBIAN_FRONTEND=noninteractive
+
+# Install system dependencies
+RUN apt-get update && apt-get install -y --no-install-recommends \
+    python3 \
+    python3-pip \
+    python3-dev \
+    git \
+    build-essential \
+    && rm -rf /var/lib/apt/lists/*
+
+# Set python3 as default
+RUN ln -sf /usr/bin/python3 /usr/bin/python
+
+# Upgrade pip
+RUN pip install --upgrade pip setuptools wheel
+
+# Install PyTorch with CUDA support
+RUN pip install torch --index-url https://download.pytorch.org/whl/cu121
+
+# Install core Python dependencies
+RUN pip install \
+    transformers>=4.40.0 \
+    accelerate>=0.30.0 \
+    datasets>=2.18.0 \
+    safetensors>=0.4.0 \
+    sentencepiece>=0.2.0 \
+    tiktoken>=0.6.0 \
+    zstandard>=0.22.0
+
+# Install quantization dependencies
+RUN pip install \
+    onnx>=1.16.0 \
+    onnxslim>=0.1.0 \
+    onnxscript>=0.1.0
+
+# Install evaluation dependencies
+RUN pip install \
+    nltk>=3.8.0 \
+    lm-eval>=0.4.0 \
+    evaluate>=0.4.0 \
+    scikit-learn>=1.4.0
+
+# Install utilities
+RUN pip install \
+    tqdm>=4.66.0 \
+    rich>=13.0.0 \
+    pyyaml>=6.0 \
+    pydantic>=2.0.0
+
+# Set working directory
+WORKDIR /workspace
+
+# Default command
+CMD ["python3", "-m", "quanto", "--help"]

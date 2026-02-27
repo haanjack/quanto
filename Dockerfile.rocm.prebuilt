@@ -1,0 +1,77 @@
+# Pre-built Docker image for AMD ROCm quantization
+# This image includes Quark and all dependencies pre-installed
+# Build: docker build -f Dockerfile.rocm.prebuilt -t haanjack/quanto:26.02-rocm .
+# Push: docker push haanjack/quanto:26.02-rocm
+#
+# Run: docker run --device=/dev/kfd --device=/dev/dri --group-add video \
+#          -v ~/models:/models -v ~/datasets:/datasets -v $(pwd):/workspace -w /workspace \
+#          haanjack/quanto:26.02-rocm python3 -m quanto ...
+
+FROM rocm/pytorch:latest
+
+LABEL maintainer="haanjack"
+LABEL description="Pre-built Docker image for AMD ROCm LLM quantization with Quark"
+LABEL version="26.02-rocm"
+
+# Prevent interactive prompts
+ENV DEBIAN_FRONTEND=noninteractive
+
+# Install system dependencies
+RUN apt-get update && apt-get install -y --no-install-recommends \
+    git \
+    build-essential \
+    && rm -rf /var/lib/apt/lists/*
+
+# Upgrade pip
+RUN pip install --upgrade pip setuptools wheel
+
+# Install core Python dependencies
+RUN pip install \
+    transformers>=4.40.0 \
+    accelerate>=0.30.0 \
+    datasets>=2.18.0 \
+    safetensors>=0.4.0 \
+    sentencepiece>=0.2.0 \
+    tiktoken>=0.6.0 \
+    zstandard>=0.22.0
+
+# Install quantization dependencies
+RUN pip install \
+    onnx>=1.16.0 \
+    onnxslim>=0.1.0 \
+    onnxscript>=0.1.0
+
+# Install evaluation dependencies
+RUN pip install \
+    nltk>=3.8.0 \
+    lm-eval>=0.4.0 \
+    evaluate>=0.4.0 \
+    scikit-learn>=1.4.0
+
+# Install utilities
+RUN pip install \
+    tqdm>=4.66.0 \
+    rich>=13.0.0 \
+    pyyaml>=6.0 \
+    pydantic>=2.0.0
+
+# Set ROCm architecture for kernel compilation
+# Adjust this based on your GPU architecture
+ENV PYTORCH_ROCM_ARCH="gfx1030;gfx1036;gfx1100;gfx1101"
+
+# Copy quark source and install
+COPY quark/ /tmp/quark/
+RUN pip install /tmp/quark && rm -rf /tmp/quark
+
+# Pre-compile Quark kernels by running a simple import
+# This avoids the ~70s compilation time on first run
+RUN python3 -c "from quark.torch import ModelQuantizer; print('Quark ready')"
+
+# Set working directory
+WORKDIR /workspace
+
+# Copy the quanto module
+COPY quanto/ /workspace/quanto/
+
+# Default command
+CMD ["python3", "-m", "quanto", "--help"]
