@@ -78,25 +78,27 @@ class DequantizationResult:
 
 def unpack_int4_to_int8(packed: torch.Tensor) -> torch.Tensor:
     """
-    Unpack INT4 values packed into INT32 tensor.
+    Unpack INT4 values packed into INT32 tensor using Quark order.
 
-    Quark packs 8 INT4 values into one INT32.
-    Each INT4 value uses 4 bits, stored in little-endian order.
+    Quark packs 8 INT4 values into one INT32 using order [0,2,4,6,1,3,5,7].
+    Format: [in_features, out_features//8] packed INT32
+    Output: [in_features, out_features] INT8
     """
-    out_features = packed.shape[0]
-    in_features_packed = packed.shape[1]
+    in_features, out_features_packed = packed.shape
+    out_features = out_features_packed * 8
 
-    # Unpack each int32 into 8 int4 values
-    unpacked = torch.zeros((out_features, in_features_packed * 8),
+    # Unpack using Quark order
+    order = [0, 2, 4, 6, 1, 3, 5, 7]
+    unpacked = torch.zeros((in_features, out_features),
                            dtype=torch.int8, device=packed.device)
 
-    for i in range(8):
+    for i, idx in enumerate(order):
         shift = i * 4
-        # Extract 4 bits and convert to int8
+        # Extract 4 bits
         nibble = ((packed >> shift) & 0xF).to(torch.int8)
         # Convert from unsigned to signed (handles negative values)
         nibble = torch.where(nibble >= 8, nibble - 16, nibble)
-        unpacked[:, i::8] = nibble
+        unpacked[:, idx::8] = nibble
 
     return unpacked
 
@@ -110,49 +112,50 @@ def dequantize_weight(
     weight: torch.Tensor,
     scale: torch.Tensor,
     zero_point: torch.Tensor,
-    weight_dtype: str,
+    weight_dtype: str = "int4",
 ) -> torch.Tensor:
     """
-    Dequantize a weight tensor.
+    Dequantize a weight tensor from packed INT4 format.
 
-    Quark stores weights in transposed format with INT4 packing:
-    - Weight: [in_features, out_features_packed] where out_features_packed = out_features / 8
-    - Scale: [in_features / group_size, out_features]
-    - Zero point: [in_features / group_size, out_features_packed]
+    Packed format from lazy_layerwise_quant:
+    - Weight packed: [in_features, out_features // 8] INT32
+    - Scale: [out_features, num_groups] BF16
+    - Zero point: [out_features, num_groups] INT32
 
-    Formula: dequantized = (quantized - zero_point) * scale
+    Output: [out_features, in_features] dequantized tensor
     """
-    # Unpack based on dtype
+    # Unpack INT4 to INT8
     if weight_dtype == "int4":
+        # weight is [in_features, out_features // 8] packed INT32
+        # After unpack: [in_features, out_features] INT8
         weight_unpacked = unpack_int4_to_int8(weight)
-        zp_unpacked = unpack_int4_to_int8(zero_point)
-    elif weight_dtype == "int8":
-        weight_unpacked = unpack_int8(weight)
-        zp_unpacked = unpack_int8(zero_point)
     else:
-        weight_unpacked = weight.to(torch.float32)
-        zp_unpacked = zero_point.to(torch.float32)
+        weight_unpacked = weight.to(torch.int8)
 
-    # Quark stores weights as [in_features, out_features]
-    in_features = weight_unpacked.shape[0]
-    out_features = weight_unpacked.shape[1]
+    in_features, out_features = weight_unpacked.shape
 
-    # Scale shape: [num_groups, out_features]
-    num_groups = scale.shape[0]
+    # Transpose to [out_features, in_features]
+    weight_unpacked = weight_unpacked.T.contiguous()
+
+    # Scale shape: [out_features, num_groups]
+    num_groups = scale.shape[1]
     group_size = in_features // num_groups
 
     # Reshape for per-group dequantization
-    weight_grouped = weight_unpacked.view(num_groups, group_size, out_features)
-    zp_grouped = zp_unpacked.unsqueeze(1)
-    scale_grouped = scale.unsqueeze(1)
+    # weight: [out_features, in_features] -> [out_features, num_groups, group_size]
+    weight_grouped = weight_unpacked.view(out_features, num_groups, group_size)
+
+    # Scale and zero_point: [out_features, num_groups] -> [out_features, num_groups, 1]
+    scale_exp = scale.unsqueeze(-1).float()
+    zp_exp = zero_point.unsqueeze(-1).float()
 
     # Dequantize: (q - zp) * scale
-    dequant = (weight_grouped.float() - zp_grouped.float()) * scale_grouped.float()
+    dequant = (weight_grouped.float() - zp_exp) * scale_exp
 
-    # Reshape back to [in_features, out_features] then transpose to [out_features, in_features]
-    dequant = dequant.view(in_features, out_features).T.contiguous()
+    # Reshape back to [out_features, in_features]
+    dequant = dequant.view(out_features, in_features)
 
-    return dequant.to(torch.float16)
+    return dequant
 
 
 class ModelDequantizer:
@@ -206,6 +209,10 @@ class ModelDequantizer:
         """
         Dequantize the model.
 
+        Supports two formats:
+        1. Layer files: quantized_layers/layer_*.safetensors (from lazy_layerwise_quant)
+        2. Single model: model.safetensors
+
         Returns:
             DequantizationResult with details
         """
@@ -214,7 +221,15 @@ class ModelDequantizer:
         try:
             start_time = time.time()
 
-            # Load config
+            model_path = Path(self.config.model_path)
+
+            # Detect input format - check for layer files first
+            layer_dir = model_path / "quantized_layers"
+            if layer_dir.exists() and list(layer_dir.glob("layer_*.safetensors")):
+                self._log(f"Detected layer-wise format from {layer_dir}")
+                return self._dequantize_layer_files(layer_dir, result, start_time)
+
+            # Load config for single model format
             self._log(f"Loading config from {self.config.model_path}...")
             self._load_config()
 
@@ -232,7 +247,7 @@ class ModelDequantizer:
             result.quant_scheme = self.quant_config.get("global_quant_config", {}).get("weight", {}).get("qscheme", "unknown")
 
             # Check model file
-            model_file = Path(self.config.model_path) / "model.safetensors"
+            model_file = model_path / "model.safetensors"
             if not model_file.exists():
                 raise FileNotFoundError(f"Model file not found: {model_file}")
 
@@ -284,6 +299,159 @@ class ModelDequantizer:
             traceback.print_exc()
 
         return result
+
+    def _dequantize_layer_files(
+        self,
+        layer_dir: Path,
+        result: DequantizationResult,
+        start_time: float,
+    ) -> DequantizationResult:
+        """
+        Dequantize from layer files format (quantized_layers/layer_*.safetensors).
+
+        This processes each layer file independently to minimize memory usage.
+        """
+        import gc
+
+        self._log("Dequantizing from layer files format...")
+
+        # Find all layer files
+        layer_files = sorted(
+            layer_dir.glob("layer_*.safetensors"),
+            key=lambda x: int(x.stem.split("_")[1])
+        )
+
+        if not layer_files:
+            raise FileNotFoundError(f"No layer files found in {layer_dir}")
+
+        self._log(f"Found {len(layer_files)} layer files")
+
+        # Load quantization result for metadata
+        result_file = layer_dir.parent / "quantization_result.json"
+        if result_file.exists():
+            with open(result_file) as f:
+                quant_result = json.load(f)
+            result.model_type = quant_result.get("model_type", "unknown")
+            result.original_dtype = quant_result.get("precision", "int4")
+        else:
+            result.model_type = "unknown"
+            result.original_dtype = "int4"
+
+        output_dtype = self._get_output_dtype()
+        result.output_dtype = self.config.output_dtype
+
+        # Create output directory
+        os.makedirs(self.config.output_dir, exist_ok=True)
+        output_layer_dir = Path(self.config.output_dir) / "dequantized_layers"
+        output_layer_dir.mkdir(exist_ok=True)
+
+        # Process each layer file
+        total_original = 0
+        total_dequant = 0
+
+        for layer_file in tqdm(layer_files, desc="Dequantizing layers"):
+            # Load layer
+            layer_weights = {}
+            with safe_open(layer_file, framework="pt", device="cpu") as f:
+                for key in f.keys():
+                    layer_weights[key] = f.get_tensor(key)
+
+            # Calculate original size
+            original_size = sum(t.numel() * t.element_size() for t in layer_weights.values())
+            total_original += original_size
+
+            # Dequantize this layer
+            dequant_weights = self._dequantize_layer(layer_weights, output_dtype)
+
+            # Calculate dequantized size
+            dequant_size = sum(t.numel() * t.element_size() for t in dequant_weights.values())
+            total_dequant += dequant_size
+
+            # Save immediately
+            output_file = output_layer_dir / layer_file.name
+            save_file(dequant_weights, str(output_file))
+
+            # Clear memory
+            del layer_weights, dequant_weights
+            gc.collect()
+
+        # Copy metadata files
+        if result_file.exists():
+            import shutil
+            shutil.copy(result_file, Path(self.config.output_dir) / "quantization_result.json")
+
+        # Try to copy config and tokenizer from original model path
+        if result_file.exists():
+            with open(result_file) as f:
+                quant_result = json.load(f)
+            original_model_path = quant_result.get("model_path")
+            if original_model_path and Path(original_model_path).exists():
+                self._copy_model_files(Path(original_model_path), Path(self.config.output_dir))
+
+        self.timing["total"] = time.time() - start_time
+        result.timing = self.timing
+        result.success = True
+        result.output_dir = self.config.output_dir
+
+        # Print summary
+        print(f"\n{'='*60}")
+        print("DEQUANTIZATION SUMMARY")
+        print(f"{'='*60}")
+        print(f"Input: {layer_dir}")
+        print(f"Output: {output_layer_dir}")
+        print(f"Original size: {total_original / 1024**3:.2f} GB")
+        print(f"Dequantized size: {total_dequant / 1024**3:.2f} GB")
+        print(f"Total time: {self.timing['total']:.2f}s")
+        print(f"{'='*60}")
+
+        return result
+
+    def _dequantize_layer(
+        self,
+        layer_weights: dict[str, torch.Tensor],
+        output_dtype: torch.dtype,
+    ) -> dict[str, torch.Tensor]:
+        """Dequantize a single layer's weights."""
+        dequant_weights = {}
+
+        # Find all packed weights (have .packed, .scale, .zero_point)
+        packed_keys = [k for k in layer_weights.keys() if k.endswith('.weight.packed')]
+
+        for packed_key in packed_keys:
+            # Get base name: model.layers.0.mlp.gate_proj.weight.packed -> model.layers.0.mlp.gate_proj.weight
+            base_key = packed_key.rsplit('.packed', 1)[0]
+            scale_key = f'{base_key}.scale'
+            zp_key = f'{base_key}.zero_point'
+
+            if scale_key not in layer_weights or zp_key not in layer_weights:
+                continue
+
+            packed = layer_weights[packed_key]
+            scale = layer_weights[scale_key]
+            zero_point = layer_weights[zp_key]
+
+            # Dequantize
+            dequant = dequantize_weight(packed, scale, zero_point, "int4")
+            dequant_weights[base_key] = dequant.to(output_dtype)
+
+        # Copy non-packed weights (norms, etc.)
+        for key, tensor in layer_weights.items():
+            if '.packed' not in key and '.scale' not in key and '.zero_point' not in key:
+                dequant_weights[key] = tensor.to(output_dtype)
+
+        return dequant_weights
+
+    def _copy_model_files(self, src_dir: Path, dst_dir: Path) -> None:
+        """Copy model config and tokenizer files."""
+        files_to_copy = [
+            "config.json", "tokenizer.json", "tokenizer_config.json",
+            "generation_config.json", "tokenizer.model", "special_tokens_map.json"
+        ]
+        import shutil
+        for fname in files_to_copy:
+            src = src_dir / fname
+            if src.exists():
+                shutil.copy(src, dst_dir / fname)
 
     def _dequantize_inmemory(
         self,
