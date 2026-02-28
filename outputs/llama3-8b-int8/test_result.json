@@ -1,0 +1,10 @@
+{
+  "test": "quantize_int8_llama",
+  "model": "Meta-Llama-3-8B",
+  "precision": "int8",
+  "success": true,
+  "quantization_time": 67.36175012588501,
+  "evaluation_time": 9.300347805023193,
+  "gsm8k_score": null,
+  "output_dir": "/output/llama3-8b-int8"
+}

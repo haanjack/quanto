@@ -1,0 +1,23 @@
+{
+  "model_path": "/models/meta-llama/Meta-Llama-3-8B",
+  "output_dir": "/output/llama3-8b-int4",
+  "precision": "int4",
+  "calibration_data": "pileval",
+  "num_calib_samples": 128,
+  "seq_len": 512,
+  "batch_size": 1,
+  "device": "cuda",
+  "exclude_layers": [
+    "lm_head"
+  ],
+  "exclude_last_n_layers": 0,
+  "aggressive_exclusion": false,
+  "custom_exclude_patterns": null,
+  "skip_evaluation": true,
+  "memory_efficient": false,
+  "layerwise": false,
+  "trust_remote_code": true,
+  "model_export": "hf_format",
+  "quant_algo": null,
+  "group_size": null
+}

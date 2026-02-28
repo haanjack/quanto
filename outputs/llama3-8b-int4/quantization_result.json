@@ -1,0 +1,20 @@
+{
+  "success": true,
+  "output_dir": "/output/llama3-8b-int4",
+  "original_ppl": null,
+  "quantized_ppl": null,
+  "ppl_change": null,
+  "exclude_layers_used": [
+    "lm_head"
+  ],
+  "model_type": "llama",
+  "quant_scheme": "int4_wo_128",
+  "error_message": null,
+  "timing": {
+    "model_loading": 7.4435553550720215,
+    "layer_analysis": 0.0014607906341552734,
+    "calibration_loading": 28.23972201347351,
+    "quantization": 28.92516326904297,
+    "export": 62.41359877586365
+  }
+}

@@ -1,0 +1,19 @@
+# Quanto Base Requirements
+# For NVIDIA CUDA: pip install -r requirements-nvidia.txt
+# For AMD ROCm: pip install -r requirements-rocm.txt
+
+# Core dependencies
+transformers>=4.40.0
+accelerate>=0.30.0
+datasets>=2.18.0
+safetensors>=0.4.0
+
+# Tokenization
+sentencepiece>=0.2.0
+tiktoken>=0.6.0
+zstandard>=0.22.0
+
+# Utilities
+tqdm>=4.66.0
+pyyaml>=6.0
+pydantic>=2.0.0
