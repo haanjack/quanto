@@ -44,23 +44,28 @@ def quantize_to_int4(
 
 
 def pack_int4_to_int32(int4_tensor: torch.Tensor) -> torch.Tensor:
-    """Pack 8 INT4 values into 1 INT32 (Quark order)."""
+    """Pack 8 INT4 values into 1 INT32 (HuggingFace/Quark format).
+
+    Input shape: [out_features, in_features]
+    Output shape: [out_features, in_features // 8]
+
+    Pack along in_features dimension for compatibility with:
+    - HuggingFace QParamsLinear
+    - Quark per-group quantization with ch_axis=-1
+    """
     out_features, in_features = int4_tensor.shape
 
-    # Transpose for Quark format
-    int4_tensor = int4_tensor.T.contiguous()
-
-    # Pad to multiple of 8
-    if out_features % 8 != 0:
-        pad = 8 - (out_features % 8)
+    # Pad in_features to multiple of 8
+    if in_features % 8 != 0:
+        pad = 8 - (in_features % 8)
         int4_tensor = torch.nn.functional.pad(int4_tensor, (0, pad))
 
-    in_f, out_f = int4_tensor.shape
-    reshaped = int4_tensor.view(in_f, out_f // 8, 8)
+    _, in_f_padded = int4_tensor.shape
+    reshaped = int4_tensor.view(out_features, in_f_padded // 8, 8)
 
     # Pack using Quark order: [0,2,4,6,1,3,5,7]
     order = [0, 2, 4, 6, 1, 3, 5, 7]
-    packed = torch.zeros(in_f, out_f // 8, dtype=torch.int32)
+    packed = torch.zeros(out_features, in_f_padded // 8, dtype=torch.int32)
 
     for i, idx in enumerate(order):
         val = (reshaped[:, :, idx].to(torch.int32) & 0x0F)

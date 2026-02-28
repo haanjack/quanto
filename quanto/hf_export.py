@@ -90,9 +90,15 @@ class HuggingFaceExporter:
 
         # Create minimal config from quantization result
         self._log("Warning: Could not find config.json, creating minimal config")
+        self._log("WARNING: The exported model may not load correctly without a complete config!")
+        self._log("         Please provide --original_model_path with a valid path to the original model.")
+
+        # Try to infer basic config from quantization result
+        num_layers = self.quant_result.get("num_layers", 32) if self.quant_result else 32
         self.model_config = {
             "model_type": self.quant_result.get("model_type", "unknown") if self.quant_result else "unknown",
             "architectures": ["Qwen2ForCausalLM"],  # Default assumption
+            "num_hidden_layers": num_layers,
         }
         return self.model_config
 
@@ -319,6 +325,38 @@ class HuggingFaceExporter:
 
         return shards
 
+    def _convert_tensor_name_to_quark_format(self, name: str) -> str:
+        """Convert tensor names from internal format to HuggingFace/Quark format.
+
+        For HuggingFace to load the model directly with from_pretrained(),
+        we use the internal key format that Quark's modules expect:
+        - `*.weight.packed` -> `*.weight`
+        - `*.weight.scale` -> `*.weight_quantizer.scale`
+        - `*.weight.zero_point` -> `*.weight_quantizer.zero_point`
+        """
+        if name.endswith(".weight.packed"):
+            return name[:-7]  # Remove '.packed' -> '*.weight'
+        elif name.endswith(".weight.scale"):
+            # 'xxx.weight.scale' -> 'xxx.weight_quantizer.scale'
+            return name[:-6] + "_quantizer.scale"
+        elif name.endswith(".weight.zero_point"):
+            # 'xxx.weight.zero_point' -> 'xxx.weight_quantizer.zero_point'
+            return name[:-11] + "_quantizer.zero_point"
+        return name
+
+    def _needs_transpose(self, name: str) -> bool:
+        """Check if a tensor needs to be transposed.
+
+        Scale and zero_point tensors need to be transposed for INT4 per_group quantization.
+        Quark expects scale shape: [num_groups, out_features] = [in_features // group_size, out_features]
+        Our checkpoint has: [out_features, num_groups] = [out_features, in_features // group_size]
+        """
+        return name.endswith(".weight.scale") or name.endswith(".weight.zero_point")
+
+    def _transpose_packed_weight(self, tensor: torch.Tensor) -> torch.Tensor:
+        """Transpose scale/zero_point from our format to Quark's expected format."""
+        return tensor.T.contiguous()
+
     def _write_shard(
         self,
         shard_idx: int,
@@ -346,15 +384,28 @@ class HuggingFaceExporter:
                 for name in names:
                     shard_tensors[name] = f.get_tensor(name)
 
+        # Convert tensor names to Quark format and transpose packed weights
+        quark_tensors = {}
+        for name, tensor in shard_tensors.items():
+            quark_name = self._convert_tensor_name_to_quark_format(name)
+
+            # Transpose packed weights from Quark format to HF format
+            if self._needs_transpose(name):
+                tensor = self._transpose_packed_weight(tensor)
+
+            quark_tensors[quark_name] = tensor
+
         # Write shard
         shard_filename = f"{shard_name}.safetensors"
-        save_file(shard_tensors, str(self.output_dir / shard_filename))
+        save_file(quark_tensors, str(self.output_dir / shard_filename))
 
-        # Update weight map
+        # Update weight map with converted names
         for name in tensor_names:
-            weight_map[name] = shard_filename
+            quark_name = self._convert_tensor_name_to_quark_format(name)
+            weight_map[quark_name] = shard_filename
 
         del shard_tensors
+        del quark_tensors
 
     def _write_index(self, weight_map: dict[str, str], num_shards: int) -> None:
         """Write the model.safetensors.index.json file."""
@@ -380,15 +431,71 @@ class HuggingFaceExporter:
 
     def _write_config(self) -> None:
         """Write config.json with quantization metadata."""
-        config = self.model_config.copy()
+        config = self.model_config.copy() if self.model_config else {}
 
-        # Add quantization config for HuggingFace
+        # Get quantization parameters from result
+        quant_result = self.quant_result or {}
+        quant_scheme = quant_result.get("quant_scheme", "int4_wo_128")
+        precision = quant_result.get("precision", "int4")
+        packed = quant_result.get("packed", True)
+        exclude_layers = quant_result.get("exclude_layers", ["lm_head"])
+
+        # Parse group size from scheme (e.g., "int4_wo_128" -> 128)
+        group_size = 128
+        if quant_scheme:
+            parts = quant_scheme.split("_")
+            if len(parts) >= 3:
+                try:
+                    group_size = int(parts[-1])
+                except ValueError:
+                    pass
+
+        # Ensure required config fields are present
+        if "model_type" not in config:
+            config["model_type"] = quant_result.get("model_type", "unknown")
+        if "architectures" not in config:
+            config["architectures"] = ["Qwen2ForCausalLM"]
+        if "torch_dtype" not in config:
+            config["torch_dtype"] = "bfloat16"
+
+        # Add quantization config for HuggingFace (matching AMD/Quark format)
         config["quantization_config"] = {
             "quant_method": "quark",
-            "quant_scheme": self.quant_result.get("quant_scheme", "int4_wo_128"),
-            "precision": self.quant_result.get("precision", "int4"),
-            "pack_int4": self.quant_result.get("pack_int4", True),
-            "batch_size": self.quant_result.get("batch_size", 4),
+            "quant_mode": "eager_mode",
+            "algo_config": None,
+            "exclude": exclude_layers,
+            "global_quant_config": {
+                "weight": {
+                    "ch_axis": -1,
+                    "dtype": precision,
+                    "group_size": group_size,
+                    "is_dynamic": False,
+                    "is_mx_scale_constraint": False,
+                    "is_scale_quant": False,
+                    "mx_element_dtype": None,
+                    "observer_cls": "PerGroupMinMaxObserver",
+                    "qscheme": "per_group",
+                    "round_method": "half_even",
+                    "scale_calculation_mode": "even",
+                    "scale_format": "bf16",
+                    "scale_type": "float",
+                    "symmetric": False,
+                },
+                "bias": None,
+                "input_tensors": None,
+                "output_tensors": None,
+                "target_device": None,
+            },
+            "layer_quant_config": {},
+            "layer_type_quant_config": {},
+            "softmax_quant_spec": None,
+            "export": {
+                "kv_cache_group": [],
+                "min_kv_scale": 0.0,
+                "pack_method": "reorder" if packed else None,
+                "weight_format": "real_quantized" if packed else "fp",
+                "weight_merge_groups": None,
+            },
         }
 
         with open(self.output_dir / "config.json", "w") as f:
@@ -399,6 +506,11 @@ class HuggingFaceExporter:
     def _copy_tokenizer_files(self) -> None:
         """Copy tokenizer and other metadata files."""
         if not self.original_model_path:
+            self._log("Warning: No original model path, skipping tokenizer files")
+            return
+
+        if not self.original_model_path.exists():
+            self._log(f"Warning: Original model path does not exist: {self.original_model_path}")
             return
 
         files_to_copy = [
@@ -411,12 +523,17 @@ class HuggingFaceExporter:
             "preprocessor_config.json",
         ]
 
+        copied = []
         for fname in files_to_copy:
             src = self.original_model_path / fname
             if src.exists():
                 shutil.copy(src, self.output_dir / fname)
+                copied.append(fname)
 
-        self._log("Copied tokenizer files")
+        if copied:
+            self._log(f"Copied tokenizer files: {copied}")
+        else:
+            self._log("Warning: No tokenizer files found to copy")
 
 
 def main():
