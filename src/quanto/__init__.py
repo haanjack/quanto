@@ -11,14 +11,15 @@ Features:
 - Dequantization support
 
 Basic Usage:
-    from quanto import AutoQuantizer, QuantizationConfig
+    from quanto import UnifiedQuantizer, UnifiedConfig
 
-    config = QuantizationConfig(
+    config = UnifiedConfig(
         model_path="/path/to/model",
         output_dir="/output/path",
         precision="int4",
+        memory_strategy="lazy",  # or "full", "layerwise_cpu", "auto"
     )
-    quantizer = AutoQuantizer(config)
+    quantizer = UnifiedQuantizer(config)
     result = quantizer.run()
 
 CLI Usage:
@@ -27,14 +28,17 @@ CLI Usage:
 
 from __future__ import annotations
 
-__version__ = "0.1.0"
+__version__ = "0.2.0"
 
-# Import core classes (will be available after full migration)
-# from .core.auto_quantize import AutoQuantizer, QuantizationConfig, QuantizationResult
-# from .core.dequantize import ModelDequantizer, DequantizationConfig
-# from .analysis.layer_analyzer import LayerAnalyzer, LayerAnalysisResult
-# from .analysis.sensitivity_analyzer import SensitivityAnalyzer, SensitivityAnalysisResult
-# from .export.hf_export import HuggingFaceExporter
+# Import core classes
+from .core import (
+    AutoQuantizer,
+    BaseQuantizer,
+    QuantizationConfig,
+    QuantizationResult,
+    UnifiedConfig,
+    UnifiedQuantizer,
+)
 
 # Always available utilities
 from .constants import (
@@ -59,6 +63,14 @@ from .utils import (
 __all__ = [
     # Version
     "__version__",
+    # Core quantization (new unified API)
+    "UnifiedConfig",
+    "UnifiedQuantizer",
+    "QuantizationResult",
+    # Core quantization (backward compatibility)
+    "QuantizationConfig",
+    "AutoQuantizer",
+    "BaseQuantizer",
     # Constants
     "PRECISION_TO_SCHEME",
     "DEFAULT_GROUP_SIZES",

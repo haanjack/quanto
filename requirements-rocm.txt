@@ -27,11 +27,16 @@ lm-eval>=0.4.0
 evaluate>=0.4.0
 scikit-learn>=1.4.0
 
+# vLLM for ROCm (optional - may require ROCm 6.0+)
+# Install from: pip install https://vllm-wheels.s3.us-west-2.amazonaws.com/rocm/vllm-1.0.0.dev-cp38-abi3-manylinux1_x86_64.whl
+# Or build from source for ROCm support
+
 # Utilities
 tqdm>=4.66.0
 rich>=13.0.0
 pyyaml>=6.0
 pydantic>=2.0.0
+psutil>=5.9.0
 
 # Note: Quark should be installed from source:
 # pip install /path/to/quark

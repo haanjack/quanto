@@ -29,7 +29,7 @@ RUN pip install \
     tiktoken>=0.6.0 \
     zstandard>=0.22.0
 
-# Install evaluation dependencies (lm-eval for GSM-8K)
+# Install evaluation dependencies (lm-eval for MMLU)
 RUN pip install \
     onnx>=1.16.0 \
     onnxslim>=0.1.0 \
@@ -39,8 +39,11 @@ RUN pip install \
     evaluate>=0.4.0 \
     scikit-learn>=1.4.0
 
+# Install vLLM for fast inference
+RUN pip install vllm>=0.6.0
+
 # Install utilities
-RUN pip install tqdm rich pyyaml pydantic
+RUN pip install tqdm rich pyyaml pydantic psutil
 
 # Copy and install Quark (from submodule)
 COPY contribs/quark/ /tmp/quark/

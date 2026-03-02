@@ -42,6 +42,7 @@ ENV/
 output/
 quantized/
 offload/
+test_outputs/
 *.safetensors
 *.bin
 *.pth
