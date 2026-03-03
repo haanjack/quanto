@@ -203,9 +203,14 @@ class UnifiedQuantizer:
         if self.config.aggressive_exclusion:
             exclude.extend(["*gate*"])
 
-        # Add sensitivity-based exclusions if threshold is set
-        if self.config.sensitivity_threshold > 0:
-            self._log("Running sensitivity analysis for exclusion detection...")
+        # Run sequential sensitivity analysis if enabled
+        if self.config.sensitivity_analysis:
+            self._log("Running sequential sensitivity analysis...")
+            sensitive_layers = self._run_sequential_sensitivity_analysis()
+            exclude.extend(sensitive_layers)
+        # Fallback to simple analysis if only threshold is set (backward compatibility)
+        elif self.config.sensitivity_threshold > 0:
+            self._log("Running simple sensitivity analysis...")
             sensitive_layers = self._analyze_sensitive_layers()
             exclude.extend(sensitive_layers)
 
@@ -243,6 +248,36 @@ class UnifiedQuantizer:
                             sensitive.append(name)
 
         return sensitive
+
+    def _run_sequential_sensitivity_analysis(self) -> list[str]:
+        """
+        Run sequential sensitivity analysis to find sensitive layers.
+
+        Uses SequentialSensitivityAnalyzer for accurate cascading effect detection.
+        Activations are cached on GPU by default for speed.
+        """
+        from .sensitivity import SequentialSensitivityAnalyzer
+
+        analyzer = SequentialSensitivityAnalyzer(
+            config=self.config,
+            cache_on_gpu=self.config.sensitivity_cache_on_gpu,
+        )
+
+        result = analyzer.analyze()
+
+        if not result.success:
+            self._log(f"Warning: Sensitivity analysis failed: {result.error_message}")
+            return []
+
+        # Log cache performance
+        self._log(f"Sensitivity analysis cache: {analyzer.cache.get_memory_summary()}")
+
+        # Store timing info
+        if result.timing:
+            self.timing["sensitivity_analysis"] = result.timing.get("total", 0)
+
+        # Return layers to exclude
+        return result.excluded_layers
 
     def _get_layer_weight_names(self, layer_idx: int, layer_prefix: str) -> list[str]:
         """Get all weight names for a specific layer."""

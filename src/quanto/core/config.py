@@ -40,7 +40,9 @@ class UnifiedConfig:
         device: Device to use for computation
         exclude_layers: Layer patterns to exclude from quantization
         aggressive_exclusion: Use aggressive layer exclusion rules
-        sensitivity_threshold: Threshold for sensitivity-based exclusion (0 = disabled)
+        sensitivity_analysis: Enable sequential sensitivity analysis for layer exclusion
+        sensitivity_threshold: Threshold for excluding sensitive layers
+        sensitivity_cache_on_gpu: Cache activations on GPU (faster, more memory)
         skip_evaluation: Skip perplexity evaluation
         trust_remote_code: Trust remote code when loading models
         debug_dir: Directory for debug output
@@ -76,8 +78,10 @@ class UnifiedConfig:
     exclude_layers: list[str] | None = None
     aggressive_exclusion: bool = False
 
-    # Sensitivity-based exclusion (for lazy mode)
-    sensitivity_threshold: float = 0.0  # 0 = disabled, >0 = enable sensitivity analysis
+    # Sensitivity-based exclusion
+    sensitivity_analysis: bool = False  # Enable sequential sensitivity analysis
+    sensitivity_threshold: float = 0.02  # Threshold for excluding sensitive layers
+    sensitivity_cache_on_gpu: bool = True  # Cache activations on GPU (faster, uses more memory)
 
     # Evaluation settings
     skip_evaluation: bool = False
@@ -154,7 +158,9 @@ class UnifiedConfig:
             "device": self.device,
             "exclude_layers": self.exclude_layers,
             "aggressive_exclusion": self.aggressive_exclusion,
+            "sensitivity_analysis": self.sensitivity_analysis,
             "sensitivity_threshold": self.sensitivity_threshold,
+            "sensitivity_cache_on_gpu": self.sensitivity_cache_on_gpu,
             "skip_evaluation": self.skip_evaluation,
             "trust_remote_code": self.trust_remote_code,
             "debug_dir": self.debug_dir,

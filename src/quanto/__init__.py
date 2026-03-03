@@ -40,6 +40,13 @@ from .core import (
     UnifiedQuantizer,
 )
 
+# Import sensitivity analysis
+from .core.sensitivity import (
+    ActivationCache,
+    SensitivityScorer,
+    SequentialSensitivityAnalyzer,
+)
+
 # Always available utilities
 from .constants import (
     DEFAULT_EXCLUDE_PATTERNS,
@@ -71,6 +78,10 @@ __all__ = [
     "QuantizationConfig",
     "AutoQuantizer",
     "BaseQuantizer",
+    # Sensitivity analysis
+    "ActivationCache",
+    "SensitivityScorer",
+    "SequentialSensitivityAnalyzer",
     # Constants
     "PRECISION_TO_SCHEME",
     "DEFAULT_GROUP_SIZES",

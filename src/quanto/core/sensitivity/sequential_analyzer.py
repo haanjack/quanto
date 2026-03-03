@@ -16,7 +16,7 @@ import torch
 import torch.nn as nn
 from tqdm import tqdm
 
-from ..utils import clear_gpu_memory
+from ...utils import clear_gpu_memory
 from .activation_cache import ActivationCache, CacheLocation
 from .scorer import SensitivityMetric, SensitivityScorer
 
