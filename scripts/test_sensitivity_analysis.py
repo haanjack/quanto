@@ -18,6 +18,7 @@ from __future__ import annotations
 import argparse
 import json
 import os
+import subprocess
 import sys
 import time
 from pathlib import Path
@@ -25,26 +26,25 @@ from pathlib import Path
 # Add src to path
 sys.path.insert(0, str(Path(__file__).parent.parent / "src"))
 
-import torch
-
 
 def get_model_path(model_name: str) -> str:
     """Get model path based on model name."""
+    home = os.path.expanduser("~")
     models = {
-        "llama3": os.path.expanduser("~/models/meta-llama/Meta-Llama-3-8B"),
-        "qwen3": os.path.expanduser("~/models/qwen/qwen3-32b"),
+        "llama3": f"{home}/models/meta-llama/Meta-Llama-3-8B",
+        "qwen3": f"{home}/models/qwen/qwen3-32b",
     }
     if model_name not in models:
         raise ValueError(f"Unknown model: {model_name}. Available: {list(models.keys())}")
-    return models[model_name]
+    path = models[model_name]
+    if not os.path.exists(path):
+        raise FileNotFoundError(f"Model not found at {path}")
+    return path
 
 
 def run_sensitivity_analysis(config) -> dict:
     """
     Run sensitivity analysis and return results.
-
-    Returns:
-        Dict with analysis results including cache stats
     """
     from quanto.core.sensitivity import SequentialSensitivityAnalyzer
 
@@ -77,7 +77,8 @@ def run_sensitivity_analysis(config) -> dict:
     print(f"  Layers to exclude: {len(result.excluded_layers)}")
     print(f"\nCache Performance:")
     print(f"  {analyzer.cache.get_memory_summary()}")
-    print(f"  Hit rate: {cache_stats['hits'] / max(cache_stats['hits'] + cache_stats['misses'], 1) * 100:.1f}%")
+    hit_rate = cache_stats['hits'] / max(cache_stats['hits'] + cache_stats['misses'], 1) * 100
+    print(f"  Hit rate: {hit_rate:.1f}%")
 
     if result.excluded_layers:
         print(f"\nExcluded layers ({len(result.excluded_layers)}):")
@@ -100,9 +101,6 @@ def run_sensitivity_analysis(config) -> dict:
 def run_quantization(config, sensitivity_result: dict) -> dict:
     """
     Run quantization with sensitivity-based exclusion.
-
-    Returns:
-        Dict with quantization results
     """
     from quanto import UnifiedQuantizer
 
@@ -131,7 +129,8 @@ def run_quantization(config, sensitivity_result: dict) -> dict:
     print(f"  Success: {result.success}")
     print(f"  Time: {elapsed:.2f}s")
     print(f"  Output: {result.output_dir}")
-    print(f"  Exclude layers used: {len(result.exclude_layers_used or [])}")
+    if result.exclude_layers_used:
+        print(f"  Exclude layers used: {len(result.exclude_layers_used)}")
 
     return {
         "success": result.success,
@@ -142,20 +141,15 @@ def run_quantization(config, sensitivity_result: dict) -> dict:
     }
 
 
-def run_evaluation(model_path: str, output_dir: str) -> dict:
+def run_evaluation(output_dir: str) -> dict:
     """
     Run MMLU 5-shot evaluation on quantized model.
-
-    Returns:
-        Dict with evaluation results
     """
     print("\n" + "=" * 60)
     print("PHASE 3: MMLU 5-shot Evaluation")
     print("=" * 60)
 
     try:
-        import subprocess
-
         start_time = time.time()
 
         # Run lm_eval
@@ -185,7 +179,7 @@ def run_evaluation(model_path: str, output_dir: str) -> dict:
         if result.returncode == 0:
             # Try to extract accuracy from output
             import re
-            match = re.search(r"acc:([0-9.]+)", result.stdout + result.stderr)
+            match = re.search(r"acc[,|:]\s*([0-9.]+)", result.stdout + result.stderr)
             if match:
                 accuracy = float(match.group(1))
             print(f"\nEvaluation completed in {elapsed:.2f}s")
@@ -193,14 +187,14 @@ def run_evaluation(model_path: str, output_dir: str) -> dict:
                 print(f"MMLU 5-shot accuracy: {accuracy:.4f}")
         else:
             print(f"Evaluation failed with code {result.returncode}")
-            print(f"Error: {result.stderr}")
+            print(f"Error: {result.stderr[:500]}")
 
         return {
             "success": result.returncode == 0,
             "accuracy": accuracy,
             "elapsed": elapsed,
             "stdout": result.stdout[:2000] if result.stdout else None,
-            "stderr": result.stderr[:2000] if result.stderr else None,
+            "stderr": result.stderr[:500] if result.stderr else None,
         }
 
     except FileNotFoundError:
@@ -211,12 +205,9 @@ def run_evaluation(model_path: str, output_dir: str) -> dict:
         return {"success": False, "error": str(e)}
 
 
-def run_baseline_comparison(config, model_name: str) -> dict:
+def run_baseline_comparison(config) -> dict:
     """
     Run comparison between with and without sensitivity analysis.
-
-    Returns:
-        Dict with comparison results
     """
     from quanto import UnifiedQuantizer
 
@@ -224,14 +215,14 @@ def run_baseline_comparison(config, model_name: str) -> dict:
     print("PHASE 4: Baseline Comparison (without sensitivity)")
     print("=" * 60)
 
-    # Create config without sensitivity
-    baseline_config = type(config)(
-        **{k: v for k, v in config.to_dict().items()
-           if k not in ["sensitivity_analysis", "sensitivity_threshold", "sensitivity_cache_on_gpu"]}
-    )
-    baseline_config.sensitivity_analysis = False
-    baseline_config.sensitivity_threshold = 0.0
-    baseline_config.output_dir = f"{config.output_dir}_baseline"
+    # Create a copy of config without sensitivity
+    config_dict = config.to_dict()
+    config_dict["sensitivity_analysis"] = False
+    config_dict["sensitivity_threshold"] = 0.0
+    config_dict["output_dir"] = f"{config.output_dir}_baseline"
+
+    from quanto import UnifiedConfig
+    baseline_config = UnifiedConfig(**config_dict)
 
     quantizer = UnifiedQuantizer(baseline_config)
 
@@ -274,9 +265,10 @@ def main():
     args = parser.parse_args()
 
     # Get model path
-    model_path = get_model_path(args.model)
-    if not os.path.exists(model_path):
-        print(f"Error: Model not found at {model_path}")
+    try:
+        model_path = get_model_path(args.model)
+    except FileNotFoundError as e:
+        print(f"Error: {e}")
         sys.exit(1)
 
     # Set output directory
@@ -295,9 +287,10 @@ def main():
     print(f"Threshold: {args.threshold}")
     print("=" * 60)
 
-    # Create config
+    # Import after path is set
     from quanto import UnifiedConfig
 
+    # Create config
     config = UnifiedConfig(
         model_path=model_path,
         output_dir=output_dir,
@@ -323,7 +316,7 @@ def main():
 
     if not sensitivity_result["success"]:
         print("\nSensitivity analysis failed. Stopping.")
-        print(json.dumps(results, indent=2))
+        print(json.dumps(results, indent=2, default=str))
         sys.exit(1)
 
     if args.skip_quantize:
@@ -331,7 +324,7 @@ def main():
         print("\n" + "=" * 60)
         print("FINAL RESULTS")
         print("=" * 60)
-        print(json.dumps(results, indent=2))
+        print(json.dumps(results, indent=2, default=str))
         return
 
     # Phase 2: Quantization
@@ -340,21 +333,21 @@ def main():
 
     if not quant_result["success"]:
         print("\nQuantization failed. Stopping.")
-        print(json.dumps(results, indent=2))
+        print(json.dumps(results, indent=2, default=str))
         sys.exit(1)
 
     # Phase 3: Evaluation
     if not args.skip_eval:
-        eval_result = run_evaluation(model_path, quant_result["output_dir"])
+        eval_result = run_evaluation(quant_result["output_dir"])
         results["evaluation"] = eval_result
 
     # Phase 4: Baseline comparison (optional)
     if args.compare_baseline:
-        baseline_result = run_baseline_comparison(config, args.model)
+        baseline_result = run_baseline_comparison(config)
         results["baseline"] = baseline_result
 
         if not args.skip_eval and baseline_result["success"]:
-            baseline_eval = run_evaluation(model_path, baseline_result["output_dir"])
+            baseline_eval = run_evaluation(baseline_result["output_dir"])
             results["baseline_evaluation"] = baseline_eval
 
     # Summary
@@ -362,11 +355,15 @@ def main():
     print("FINAL SUMMARY")
     print("=" * 60)
     print(f"Model: {args.model}")
+
     print(f"\nSensitivity Analysis:")
     print(f"  Layers analyzed: {len(sensitivity_result['sensitive_layers'])}")
     print(f"  Layers excluded: {len(sensitivity_result['excluded_layers'])}")
     print(f"  Cache GPU memory: {sensitivity_result['cache_stats']['gpu_memory_gb']:.2f} GB")
-    print(f"  Cache hit rate: {sensitivity_result['cache_stats']['hits'] / max(sensitivity_result['cache_stats']['hits'] + sensitivity_result['cache_stats']['misses'], 1) * 100:.1f}%")
+    hits = sensitivity_result['cache_stats']['hits']
+    misses = sensitivity_result['cache_stats']['misses']
+    hit_rate = hits / max(hits + misses, 1) * 100
+    print(f"  Cache hit rate: {hit_rate:.1f}%")
 
     print(f"\nQuantization:")
     print(f"  Output: {quant_result['output_dir']}")
@@ -382,7 +379,7 @@ def main():
 
     # Save results
     results_file = f"{output_dir}/sensitivity_test_results.json"
-    os.makedirs(os.path.dirname(results_file), exist_ok=True)
+    os.makedirs(output_dir, exist_ok=True)
     with open(results_file, "w") as f:
         json.dump(results, f, indent=2, default=str)
     print(f"\nResults saved to: {results_file}")

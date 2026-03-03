@@ -1,22 +1,22 @@
 """
 Sequential Sensitivity Analyzer for Layer-wise Quantization.
 
-Performs memory-efficient sensitivity analysis by processing layers
-sequentially, capturing cascading quantization effects.
+Performs memory-efficient sensitivity analysis using forward hooks
+to capture activations during a full model forward pass.
 """
 
 from __future__ import annotations
 
 import gc
 import time
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from typing import TYPE_CHECKING
 
 import torch
 import torch.nn as nn
 from tqdm import tqdm
 
-from ...utils import clear_gpu_memory
+from quanto.utils import clear_gpu_memory
 from .activation_cache import ActivationCache, CacheLocation
 from .scorer import SensitivityMetric, SensitivityScorer
 
@@ -36,26 +36,14 @@ class AnalysisResult:
 
 class SequentialSensitivityAnalyzer:
     """
-    Memory-efficient sequential sensitivity analyzer.
+    Memory-efficient sequential sensitivity analyzer using forward hooks.
 
     Analyzes layer sensitivity to quantization by:
-    1. Running baseline forward pass (FP16), caching activations on GPU
-    2. For each layer, comparing quantized output vs baseline
+    1. Running baseline forward pass with hooks to capture FP16 activations
+    2. For each layer, quantizing it and comparing output vs baseline
 
     This captures cascading quantization effects that independent
     layer analysis misses.
-
-    Usage:
-        config = UnifiedConfig(
-            model_path="meta-llama/Llama-3-8B",
-            sensitivity_threshold=0.02,
-        )
-
-        analyzer = SequentialSensitivityAnalyzer(config)
-        result = analyzer.analyze()
-
-        print(f"Sensitive layers: {result.sensitive_layers}")
-        print(f"Exclude: {result.excluded_layers}")
     """
 
     def __init__(
@@ -79,7 +67,7 @@ class SequentialSensitivityAnalyzer:
         # Components
         self.cache = ActivationCache(
             device=config.device,
-            gpu_memory_threshold=0.7,  # Use 70% of GPU for activations
+            gpu_memory_threshold=0.7,
             enable_cpu_spillover=True,
         )
         self.scorer = SensitivityScorer(metric=metric)
@@ -90,6 +78,7 @@ class SequentialSensitivityAnalyzer:
         self.model = None
         self.layer_prefix = "model.layers"
         self.num_layers = 0
+        self.layer_names: list[str] = []
 
     def _log(self, message: str) -> None:
         """Print log message with timestamp."""
@@ -124,7 +113,7 @@ class SequentialSensitivityAnalyzer:
 
     def _get_calibration_input(self) -> torch.Tensor:
         """Get calibration input tensor."""
-        from ..utils import get_calib_dataloader
+        from quanto.utils import get_calib_dataloader
 
         calib_loader = get_calib_dataloader(
             dataset_name_or_path=self.config.calibration_data,
@@ -143,96 +132,192 @@ class SequentialSensitivityAnalyzer:
 
         raise ValueError("No calibration data available")
 
-    def _load_model_layer_by_layer(self) -> list[nn.Module]:
-        """
-        Load model layers one by one to minimize memory usage.
-
-        Returns:
-            List of layer modules
-        """
+    def _load_model(self) -> nn.Module:
+        """Load the full model."""
         from transformers import AutoModelForCausalLM
 
-        self._log("Loading model layers...")
+        self._log("Loading model...")
 
-        # Load full model (TODO: implement true layer-by-layer loading)
         model = AutoModelForCausalLM.from_pretrained(
             self.config.model_path,
             torch_dtype=torch.float16,
-            device_map="cpu",
+            device_map=self.config.device,
             trust_remote_code=self.config.trust_remote_code,
             low_cpu_mem_usage=True,
         )
 
         self.model = model
 
-        # Extract layers
-        layers = []
+        # Find all transformer layers
+        self.layer_names = []
         for i in range(self.num_layers):
             layer_name = f"{self.layer_prefix}.{i}"
             layer = dict(model.named_modules()).get(layer_name)
             if layer is not None:
-                layers.append(layer)
+                self.layer_names.append(layer_name)
 
-        self._log(f"Extracted {len(layers)} layers")
-        return layers
+        self._log(f"Found {len(self.layer_names)} layers")
+        return model
 
-    def _run_baseline_pass(self, layers: list[nn.Module], input_tensor: torch.Tensor) -> None:
+    def _run_baseline_with_hooks(self, model: nn.Module, input_ids: torch.Tensor) -> None:
         """
-        Run baseline forward pass, caching activations on GPU.
+        Run baseline forward pass with hooks to capture activations.
 
         Args:
-            layers: List of model layers
-            input_tensor: Input tensor for the model
+            model: The full model
+            input_ids: Input token IDs
         """
-        self._log("Running baseline pass (FP16)...")
+        self._log("Running baseline pass (FP16) with hooks...")
 
-        # Store initial input
-        current_activation = input_tensor.to(self.config.device)
-        self.cache.store(layer_idx=0, activation=current_activation, is_input=True)
+        # Storage for captured activations
+        captured = {}
 
-        # Process each layer
-        for idx, layer in enumerate(tqdm(layers, desc="Baseline pass")):
-            # Move layer to GPU
-            layer = layer.to(self.config.device)
+        def make_hook(layer_name: str):
+            def hook(module, inp, out):
+                # Store input (first element of inp tuple)
+                if inp and len(inp) > 0:
+                    activation = inp[0]
+                    if isinstance(activation, torch.Tensor):
+                        captured[layer_name] = activation.detach().clone()
+            return hook
 
-            # Forward pass
-            with torch.no_grad():
-                # Handle different layer output formats
-                output = layer(current_activation)
+        # Register hooks on all layers
+        hooks = []
+        for layer_name in self.layer_names:
+            layer = dict(model.named_modules()).get(layer_name)
+            if layer is not None:
+                hook = layer.register_forward_hook(make_hook(layer_name))
+                hooks.append(hook)
 
-                if isinstance(output, tuple):
-                    layer_output = output[0]
-                else:
-                    layer_output = output
+        # Also capture the model's final input (embeddings)
+        def embed_hook(module, inp, out):
+            captured["__embed_output__"] = out.detach().clone()
 
-            # Cache output (which is input to next layer)
-            current_activation = layer_output
+        # Find and hook embedding layer
+        embed_layer = None
+        for name in ["model.embed_tokens", "model.wte", "transformer.wte"]:
+            embed_layer = dict(model.named_modules()).get(name)
+            if embed_layer:
+                break
 
-            # Store on GPU by default
+        if embed_layer:
+            hooks.append(embed_layer.register_forward_hook(embed_hook))
+
+        # Forward pass
+        with torch.no_grad():
+            _ = model(input_ids)
+
+        # Remove hooks
+        for h in hooks:
+            h.remove()
+
+        # Store captured activations in cache
+        # First store embedding output
+        if "__embed_output__" in captured:
             self.cache.store(
-                layer_idx=idx + 1,
-                activation=current_activation,
+                layer_idx=0,
+                activation=captured["__embed_output__"],
                 is_input=True,
                 force_location=CacheLocation.GPU if self.cache_on_gpu else None,
             )
 
-            # Move layer back to CPU
-            layer = layer.cpu()
-            clear_gpu_memory()
+        # Then store each layer's input
+        for idx, layer_name in enumerate(self.layer_names):
+            if layer_name in captured:
+                self.cache.store(
+                    layer_idx=idx + 1,
+                    activation=captured[layer_name],
+                    is_input=True,
+                    force_location=CacheLocation.GPU if self.cache_on_gpu else None,
+                )
+
+        # Also capture output of last layer for final comparison
+        # (already done via the hook on last layer)
 
         self._log(f"Baseline pass complete. Cache: {self.cache.get_memory_summary()}")
 
-    def _quantize_single_layer(
+    def _quantize_and_compare_layer(
         self,
-        layer: nn.Module,
+        model: nn.Module,
         layer_name: str,
-    ) -> nn.Module:
+        layer_idx: int,
+        input_ids: torch.Tensor,
+    ) -> float | None:
+        """
+        Quantize a single layer and compare output to baseline.
+
+        Args:
+            model: The full model
+            layer_name: Name of the layer to test
+            layer_idx: Index of the layer
+            input_ids: Input token IDs
+
+        Returns:
+            Sensitivity score, or None if comparison failed
+        """
+        import copy
+
+        # Get baseline activation for this layer
+        baseline_input = self.cache.get(
+            layer_idx=layer_idx,
+            is_input=True,
+            target_device=self.config.device,
+        )
+
+        baseline_output = self.cache.get(
+            layer_idx=layer_idx + 1,
+            is_input=True,
+            target_device=self.config.device,
+        )
+
+        if baseline_input is None or baseline_output is None:
+            return None
+
+        # Get the layer
+        layer = dict(model.named_modules()).get(layer_name)
+        if layer is None:
+            return None
+
+        # Clone the layer for quantization
+        layer_copy = copy.deepcopy(layer)
+
+        # Quantize the layer
+        try:
+            quantized_layer = self._quantize_layer(layer_copy, layer_name)
+        except Exception as e:
+            self._log(f"  Error quantizing {layer_name}: {e}")
+            return None
+
+        # Run forward pass on quantized layer
+        quantized_layer = quantized_layer.to(self.config.device)
+        with torch.no_grad():
+            try:
+                output = quantized_layer(baseline_input)
+                if isinstance(output, tuple):
+                    quantized_output = output[0]
+                else:
+                    quantized_output = output
+            except Exception as e:
+                self._log(f"  Error in forward pass: {e}")
+                del quantized_layer
+                return None
+
+        # Compute sensitivity score
+        score = self.scorer.compute_score(baseline_output, quantized_output)
+
+        # Cleanup
+        del layer_copy, quantized_layer, quantized_output
+        clear_gpu_memory()
+
+        return score
+
+    def _quantize_layer(self, layer: nn.Module, layer_name: str) -> nn.Module:
         """
         Quantize a single layer for sensitivity testing.
 
         Args:
             layer: The layer module to quantize
-            layer_name: Name of the layer (for logging)
+            layer_name: Name of the layer
 
         Returns:
             Quantized layer
@@ -240,7 +325,7 @@ class SequentialSensitivityAnalyzer:
         from quark.torch import ModelQuantizer
         from quark.torch.quantization.config.config import Int4PerGroupSpec, QConfig, QLayerConfig
 
-        # Create quantization config for this layer only
+        # Create quantization config
         quant_config = QConfig(
             global_quant_config=QLayerConfig(
                 weight=Int4PerGroupSpec(group_size=128).to_quantization_spec()
@@ -254,87 +339,10 @@ class SequentialSensitivityAnalyzer:
         dummy = torch.zeros(1, 1, device=self.config.device)
         dummy_loader = DataLoader(TensorDataset(dummy), batch_size=1)
 
-        layer = layer.to(self.config.device)
         quantized_layer = quantizer.quantize_model(layer, dummy_loader)
         quantized_layer = quantizer.freeze(quantized_layer)
 
         return quantized_layer
-
-    def _run_sensitivity_pass(self, layers: list[nn.Module]) -> None:
-        """
-        Run sensitivity analysis pass.
-
-        For each layer:
-        1. Quantize that layer
-        2. Run forward using cached input
-        3. Compare output to cached baseline
-        """
-        self._log("Running sensitivity analysis pass...")
-
-        for idx, layer in enumerate(tqdm(layers, desc="Sensitivity pass")):
-            layer_name = f"{self.layer_prefix}.{idx}"
-
-            # Get cached input for this layer
-            cached_input = self.cache.get(
-                layer_idx=idx,
-                is_input=True,
-                target_device=self.config.device,
-            )
-
-            if cached_input is None:
-                self._log(f"  Warning: No cached input for layer {idx}")
-                continue
-
-            # Clone layer for quantization
-            import copy
-            layer_copy = copy.deepcopy(layer)
-
-            # Quantize the layer
-            try:
-                quantized_layer = self._quantize_single_layer(layer_copy, layer_name)
-            except Exception as e:
-                self._log(f"  Error quantizing layer {idx}: {e}")
-                continue
-
-            # Get baseline output
-            baseline_output = self.cache.get(
-                layer_idx=idx + 1,
-                is_input=True,
-                target_device=self.config.device,
-            )
-
-            if baseline_output is None:
-                # Run baseline forward to get output
-                layer_fp16 = layer.to(self.config.device)
-                with torch.no_grad():
-                    output = layer_fp16(cached_input)
-                    if isinstance(output, tuple):
-                        baseline_output = output[0]
-                    else:
-                        baseline_output = output
-                layer_fp16 = layer_fp16.cpu()
-
-            # Run quantized forward
-            with torch.no_grad():
-                output = quantized_layer(cached_input)
-                if isinstance(output, tuple):
-                    quantized_output = output[0]
-                else:
-                    quantized_output = output
-
-            # Record sensitivity score
-            self.scorer.record_layer_score(
-                layer_name=layer_name,
-                layer_idx=idx,
-                baseline_output=baseline_output,
-                quantized_output=quantized_output,
-            )
-
-            # Cleanup
-            del layer_copy, quantized_layer
-            clear_gpu_memory()
-
-        self._log("Sensitivity pass complete")
 
     def analyze(self) -> AnalysisResult:
         """
@@ -357,32 +365,39 @@ class SequentialSensitivityAnalyzer:
             self._setup()
             result.timing["setup"] = time.time() - setup_start
 
-            # Load layers
+            # Load model
             load_start = time.time()
-            layers = self._load_model_layer_by_layer()
+            model = self._load_model()
             result.timing["load_model"] = time.time() - load_start
 
             # Get calibration input
-            input_tensor = self._get_calibration_input()
+            input_ids = self._get_calibration_input()
 
-            # Baseline pass
+            # Baseline pass with hooks
             baseline_start = time.time()
-            self._run_baseline_pass(layers, input_tensor)
+            self._run_baseline_with_hooks(model, input_ids)
             result.timing["baseline_pass"] = time.time() - baseline_start
 
-            # Sensitivity pass
+            # Sensitivity analysis per layer
             sensitivity_start = time.time()
-            self._run_sensitivity_pass(layers)
-            result.timing["sensitivity_pass"] = time.time() - sensitivity_start
+            self._log("Running sensitivity analysis per layer...")
 
-            # Aggregate results
-            scores = self.scorer.get_aggregated_scores()
-            result.sensitive_layers = {s.layer_name: s.score for s in scores}
+            for idx, layer_name in enumerate(tqdm(self.layer_names, desc="Sensitivity pass")):
+                score = self._quantize_and_compare_layer(model, layer_name, idx, input_ids)
+
+                if score is not None:
+                    result.sensitive_layers[layer_name] = score
+                    self.scorer._scores[layer_name] = [score]
+
+            result.timing["sensitivity_pass"] = time.time() - sensitivity_start
 
             # Determine excluded layers based on threshold
             threshold = self.config.sensitivity_threshold
             if threshold > 0:
-                result.excluded_layers = self.scorer.get_layers_above_threshold(threshold)
+                result.excluded_layers = [
+                    name for name, score in result.sensitive_layers.items()
+                    if score > threshold
+                ]
                 self._log(f"Layers above threshold {threshold}: {result.excluded_layers}")
 
             result.success = True
@@ -434,5 +449,8 @@ class SequentialSensitivityAnalyzer:
             print("\nTiming:")
             for stage, duration in result.timing.items():
                 print(f"  {stage}: {duration:.2f}s")
+
+        print("\nCache Performance:")
+        print(f"  {self.cache.get_memory_summary()}")
 
         print("=" * 60)
