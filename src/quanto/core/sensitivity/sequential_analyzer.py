@@ -241,37 +241,22 @@ class SequentialSensitivityAnalyzer:
         model: nn.Module,
         layer_name: str,
         layer_idx: int,
-        input_ids: torch.Tensor,
     ) -> float | None:
         """
-        Quantize a single layer and compare output to baseline.
+        Quantize a single layer and compute sensitivity score.
+
+        Uses weight-level comparison to avoid position embedding issues
+        with transformer layers.
 
         Args:
             model: The full model
             layer_name: Name of the layer to test
             layer_idx: Index of the layer
-            input_ids: Input token IDs
 
         Returns:
-            Sensitivity score, or None if comparison failed
+            Sensitivity score (weight quantization error), or None if failed
         """
         import copy
-
-        # Get baseline activation for this layer
-        baseline_input = self.cache.get(
-            layer_idx=layer_idx,
-            is_input=True,
-            target_device=self.config.device,
-        )
-
-        baseline_output = self.cache.get(
-            layer_idx=layer_idx + 1,
-            is_input=True,
-            target_device=self.config.device,
-        )
-
-        if baseline_input is None or baseline_output is None:
-            return None
 
         # Get the layer
         layer = dict(model.named_modules()).get(layer_name)
@@ -281,6 +266,15 @@ class SequentialSensitivityAnalyzer:
         # Clone the layer for quantization
         layer_copy = copy.deepcopy(layer)
 
+        # Get original weights
+        original_weights = {}
+        for name, param in layer.named_parameters():
+            if 'weight' in name and len(param.shape) == 2:
+                original_weights[name] = param.data.clone()
+
+        if not original_weights:
+            return None
+
         # Quantize the layer
         try:
             quantized_layer = self._quantize_layer(layer_copy, layer_name)
@@ -288,28 +282,31 @@ class SequentialSensitivityAnalyzer:
             self._log(f"  Error quantizing {layer_name}: {e}")
             return None
 
-        # Run forward pass on quantized layer
-        quantized_layer = quantized_layer.to(self.config.device)
-        with torch.no_grad():
-            try:
-                output = quantized_layer(baseline_input)
-                if isinstance(output, tuple):
-                    quantized_output = output[0]
-                else:
-                    quantized_output = output
-            except Exception as e:
-                self._log(f"  Error in forward pass: {e}")
-                del quantized_layer
-                return None
+        # Get quantized weights and compute error
+        total_error = 0.0
+        total_norm = 0.0
 
-        # Compute sensitivity score
-        score = self.scorer.compute_score(baseline_output, quantized_output)
+        for name, param in quantized_layer.named_parameters():
+            if 'weight' in name and len(param.shape) == 2 and name in original_weights:
+                orig = original_weights[name].float()
+                quant = param.data.float()
+
+                # Compute relative L2 error
+                diff_norm = torch.norm(orig - quant).item()
+                orig_norm = torch.norm(orig).item()
+
+                if orig_norm > 1e-8:
+                    relative_error = diff_norm / orig_norm
+                    total_error += relative_error
+                    total_norm += 1
 
         # Cleanup
-        del layer_copy, quantized_layer, quantized_output
+        del layer_copy, quantized_layer
         clear_gpu_memory()
 
-        return score
+        if total_norm > 0:
+            return total_error / total_norm
+        return None
 
     def _quantize_layer(self, layer: nn.Module, layer_name: str) -> nn.Module:
         """
@@ -326,9 +323,10 @@ class SequentialSensitivityAnalyzer:
         from quark.torch.quantization.config.config import Int4PerGroupSpec, QConfig, QLayerConfig
 
         # Create quantization config
+        # ch_axis=0 for per-row quantization (output channel dimension)
         quant_config = QConfig(
             global_quant_config=QLayerConfig(
-                weight=Int4PerGroupSpec(group_size=128).to_quantization_spec()
+                weight=Int4PerGroupSpec(ch_axis=0, group_size=128).to_quantization_spec()
             ),
         )
 
@@ -383,7 +381,7 @@ class SequentialSensitivityAnalyzer:
             self._log("Running sensitivity analysis per layer...")
 
             for idx, layer_name in enumerate(tqdm(self.layer_names, desc="Sensitivity pass")):
-                score = self._quantize_and_compare_layer(model, layer_name, idx, input_ids)
+                score = self._quantize_and_compare_layer(model, layer_name, idx)
 
                 if score is not None:
                     result.sensitive_layers[layer_name] = score

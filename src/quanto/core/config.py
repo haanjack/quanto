@@ -80,7 +80,7 @@ class UnifiedConfig:
 
     # Sensitivity-based exclusion
     sensitivity_analysis: bool = False  # Enable sequential sensitivity analysis
-    sensitivity_threshold: float = 0.02  # Threshold for excluding sensitive layers
+    sensitivity_threshold: float = 0.0  # Threshold for excluding sensitive layers (0 = disabled, typical values: 0.12-0.15 for INT4)
     sensitivity_cache_on_gpu: bool = True  # Cache activations on GPU (faster, uses more memory)
 
     # Evaluation settings
