@@ -8,7 +8,11 @@ from the previous quantizer implementations.
 from __future__ import annotations
 
 from dataclasses import dataclass, field
-from typing import Any
+from typing import Any, Literal
+
+
+# Supported export formats
+ExportFormat = Literal["quark", "awq", "gptq"]
 
 
 @dataclass
@@ -28,6 +32,7 @@ class UnifiedConfig:
         precision: Target precision (int4, int8, fp8, mxfp4)
         pack_int4: Pack INT4 weights to INT32 for storage efficiency
         memory_strategy: Memory strategy ("full", "layerwise_cpu", "lazy", "auto")
+        export_format: Export format ("quark", "awq", "gptq") for vLLM compatibility
         calibration_data: Calibration dataset name or path
         num_calib_samples: Number of calibration samples
         seq_len: Sequence length for calibration
@@ -51,6 +56,12 @@ class UnifiedConfig:
 
     # Memory strategy: "full", "layerwise_cpu", "lazy", "auto"
     memory_strategy: str = "auto"
+
+    # Export format: "quark", "awq", "gptq"
+    # - "quark": Native Quark format (default)
+    # - "awq": AWQ format for vLLM compatibility (uses qweight, scales, qzeros)
+    # - "gptq": GPTQ format for vLLM compatibility (uses qweight, scales, g_idx)
+    export_format: ExportFormat = "quark"
 
     # Calibration settings
     calibration_data: str = "pileval"
@@ -98,6 +109,20 @@ class UnifiedConfig:
                 f"Invalid memory_strategy '{self.memory_strategy}'. Must be one of: {valid_strategies}"
             )
 
+        # Validate export format
+        valid_formats = ["quark", "awq", "gptq"]
+        if self.export_format not in valid_formats:
+            raise ValueError(
+                f"Invalid export_format '{self.export_format}'. Must be one of: {valid_formats}"
+            )
+
+        # AWQ/GPTQ export only works with INT4
+        if self.export_format in ["awq", "gptq"] and not self.precision.startswith("int4"):
+            raise ValueError(
+                f"export_format '{self.export_format}' only supports INT4 precision, "
+                f"got precision '{self.precision}'"
+            )
+
         # Pack INT4 only makes sense for int4 precision
         if self.pack_int4 and not self.precision.startswith("int4"):
             self.pack_int4 = False  # Silently disable for non-INT4 precisions
@@ -121,6 +146,7 @@ class UnifiedConfig:
             "precision": self.precision,
             "pack_int4": self.pack_int4,
             "memory_strategy": self.memory_strategy,
+            "export_format": self.export_format,
             "calibration_data": self.calibration_data,
             "num_calib_samples": self.num_calib_samples,
             "seq_len": self.seq_len,

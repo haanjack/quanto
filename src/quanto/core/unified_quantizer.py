@@ -279,18 +279,21 @@ class UnifiedQuantizer:
         quant_scheme = self._get_quant_scheme()
         self._log(f"Using quantization scheme: {quant_scheme}")
 
+        # Create base quant config
         if self.template:
-            return self.template.get_config(
+            quant_config = self.template.get_config(
                 scheme=quant_scheme,
                 exclude_layers=exclude_layers,
             )
         else:
-            return QConfig(
+            quant_config = QConfig(
                 global_quant_config=QLayerConfig(
                     weight=Int4PerGroupSpec(group_size=128).to_quantization_spec()
                 ),
                 exclude=exclude_layers,
             )
+
+        return quant_config
 
     def _quantize_layer_weights(
         self,
@@ -976,6 +979,7 @@ class UnifiedQuantizer:
             self.timing["quantization"] = time.time() - quant_start
 
             # Export
+            # Note: AWQ/GPTQ export will be implemented via post-quantization conversion
             self._log("Exporting quantized model...")
             from quark.torch import export_safetensors
 
@@ -983,7 +987,6 @@ class UnifiedQuantizer:
                 export_safetensors(
                     model=model,
                     output_dir=self.config.output_dir,
-                    custom_mode="quark",
                     weight_format="real_quantized",
                 )
 
