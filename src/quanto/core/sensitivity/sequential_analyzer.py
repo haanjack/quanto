@@ -51,6 +51,7 @@ class SequentialSensitivityAnalyzer:
         config: UnifiedConfig,
         metric: SensitivityMetric = SensitivityMetric.RELATIVE_NORM,
         cache_on_gpu: bool = True,
+        initial_exclude_layers: list[str] | None = None,
     ):
         """
         Initialize the analyzer.
@@ -59,10 +60,12 @@ class SequentialSensitivityAnalyzer:
             config: UnifiedConfig with model and analysis settings
             metric: Sensitivity metric to use
             cache_on_gpu: Store activations on GPU by default
+            initial_exclude_layers: Layers to skip during analysis (already excluded)
         """
         self.config = config
         self.metric = metric
         self.cache_on_gpu = cache_on_gpu
+        self.initial_exclude_layers = initial_exclude_layers or []
 
         # Components
         self.cache = ActivationCache(
@@ -133,30 +136,39 @@ class SequentialSensitivityAnalyzer:
         raise ValueError("No calibration data available")
 
     def _load_model(self) -> nn.Module:
-        """Load the full model."""
+        """Load the full model on CPU to conserve GPU memory for large models."""
         from transformers import AutoModelForCausalLM
 
         self._log("Loading model...")
 
+        # Always load model on CPU for sensitivity analysis
+        # This avoids OOM errors with large models
         model = AutoModelForCausalLM.from_pretrained(
             self.config.model_path,
             torch_dtype=torch.float16,
-            device_map=self.config.device,
+            device_map="cpu",
             trust_remote_code=self.config.trust_remote_code,
             low_cpu_mem_usage=True,
         )
 
         self.model = model
 
-        # Find all transformer layers
+        # Find all quantizable linear layers (not just transformer decoder layers)
         self.layer_names = []
-        for i in range(self.num_layers):
-            layer_name = f"{self.layer_prefix}.{i}"
-            layer = dict(model.named_modules()).get(layer_name)
-            if layer is not None:
-                self.layer_names.append(layer_name)
+        exclude_patterns = ['embed', 'norm', 'lm_head']  # Skip embedding and norm layers
 
-        self._log(f"Found {len(self.layer_names)} layers")
+        for name, module in model.named_modules():
+            # Only include Linear layers with 2D weights
+            if isinstance(module, nn.Linear):
+                # Skip if matches exclude patterns
+                if any(pat in name for pat in exclude_patterns):
+                    continue
+                # Skip if weight is not 2D (shouldn't happen for Linear but be safe)
+                if module.weight is None or len(module.weight.shape) != 2:
+                    continue
+                self.layer_names.append(name)
+
+        self._log(f"Found {len(self.layer_names)} quantizable linear layers")
         return model
 
     def _run_baseline_with_hooks(self, model: nn.Module, input_ids: torch.Tensor) -> None:
@@ -334,7 +346,8 @@ class SequentialSensitivityAnalyzer:
         quantizer = ModelQuantizer(quant_config)
 
         from torch.utils.data import DataLoader, TensorDataset
-        dummy = torch.zeros(1, 1, device=self.config.device)
+        # Use CPU dummy tensor since layer is on CPU
+        dummy = torch.zeros(1, 1, device="cpu")
         dummy_loader = DataLoader(TensorDataset(dummy), batch_size=1)
 
         quantized_layer = quantizer.quantize_model(layer, dummy_loader)
@@ -368,24 +381,34 @@ class SequentialSensitivityAnalyzer:
             model = self._load_model()
             result.timing["load_model"] = time.time() - load_start
 
-            # Get calibration input
-            input_ids = self._get_calibration_input()
+            # Get calibration input (only needed if running baseline pass)
+            # input_ids = self._get_calibration_input()
 
-            # Baseline pass with hooks
-            baseline_start = time.time()
-            self._run_baseline_with_hooks(model, input_ids)
-            result.timing["baseline_pass"] = time.time() - baseline_start
+            # Baseline pass with hooks - SKIPPED for weight-based comparison
+            # This saves GPU memory as we don't need to run inference
+            # baseline_start = time.time()
+            # self._run_baseline_with_hooks(model, input_ids)
+            # result.timing["baseline_pass"] = time.time() - baseline_start
 
             # Sensitivity analysis per layer
             sensitivity_start = time.time()
             self._log("Running sensitivity analysis per layer...")
 
+            skipped_layers: list[str] = []
             for idx, layer_name in enumerate(tqdm(self.layer_names, desc="Sensitivity pass")):
+                # Skip layers that are already excluded
+                if layer_name in self.initial_exclude_layers:
+                    skipped_layers.append(layer_name)
+                    continue
+
                 score = self._quantize_and_compare_layer(model, layer_name, idx)
 
                 if score is not None:
                     result.sensitive_layers[layer_name] = score
                     self.scorer._scores[layer_name] = [score]
+
+            if skipped_layers:
+                self._log(f"Skipped {len(skipped_layers)} already excluded layers")
 
             result.timing["sensitivity_pass"] = time.time() - sensitivity_start
 

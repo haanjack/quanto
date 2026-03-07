@@ -82,6 +82,7 @@ class UnifiedConfig:
     sensitivity_analysis: bool = False  # Enable sequential sensitivity analysis
     sensitivity_threshold: float = 0.0  # Threshold for excluding sensitive layers (0 = disabled, typical values: 0.12-0.15 for INT4)
     sensitivity_cache_on_gpu: bool = True  # Cache activations on GPU (faster, uses more memory)
+    max_iterations: int = 10  # Maximum iterations for iterative sensitivity analysis (1 = single-pass)
 
     # Evaluation settings
     skip_evaluation: bool = False
@@ -142,6 +143,10 @@ class UnifiedConfig:
         if self.num_calib_samples < 1:
             raise ValueError(f"num_calib_samples must be >= 1, got {self.num_calib_samples}")
 
+        # Validate max_iterations
+        if self.max_iterations < 1:
+            raise ValueError(f"max_iterations must be >= 1, got {self.max_iterations}")
+
     def to_dict(self) -> dict[str, Any]:
         """Convert configuration to dictionary."""
         return {
@@ -161,6 +166,7 @@ class UnifiedConfig:
             "sensitivity_analysis": self.sensitivity_analysis,
             "sensitivity_threshold": self.sensitivity_threshold,
             "sensitivity_cache_on_gpu": self.sensitivity_cache_on_gpu,
+            "max_iterations": self.max_iterations,
             "skip_evaluation": self.skip_evaluation,
             "trust_remote_code": self.trust_remote_code,
             "debug_dir": self.debug_dir,
