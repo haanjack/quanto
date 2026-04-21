@@ -52,6 +52,7 @@ class SequentialSensitivityAnalyzer:
         metric: SensitivityMetric = SensitivityMetric.RELATIVE_NORM,
         cache_on_gpu: bool = True,
         initial_exclude_layers: list[str] | None = None,
+        template: object | None = None,
     ):
         """
         Initialize the analyzer.
@@ -61,11 +62,13 @@ class SequentialSensitivityAnalyzer:
             metric: Sensitivity metric to use
             cache_on_gpu: Store activations on GPU by default
             initial_exclude_layers: Layers to skip during analysis (already excluded)
+            template: LLMTemplate instance for precision-aware quantization config
         """
         self.config = config
         self.metric = metric
         self.cache_on_gpu = cache_on_gpu
         self.initial_exclude_layers = initial_exclude_layers or []
+        self.template = template
 
         # Components
         self.cache = ActivationCache(
@@ -324,6 +327,10 @@ class SequentialSensitivityAnalyzer:
         """
         Quantize a single layer for sensitivity testing.
 
+        Uses the actual target precision (MXFP4, INT4, FP8, etc.) rather than
+        a hardcoded INT4 proxy, so sensitivity scores accurately reflect the
+        quantization scheme being applied.
+
         Args:
             layer: The layer module to quantize
             layer_name: Name of the layer
@@ -332,15 +339,10 @@ class SequentialSensitivityAnalyzer:
             Quantized layer
         """
         from quark.torch import ModelQuantizer
-        from quark.torch.quantization.config.config import Int4PerGroupSpec, QConfig, QLayerConfig
 
-        # Create quantization config
-        # ch_axis=0 for per-row quantization (output channel dimension)
-        quant_config = QConfig(
-            global_quant_config=QLayerConfig(
-                weight=Int4PerGroupSpec(ch_axis=0, group_size=128).to_quantization_spec()
-            ),
-        )
+        from ...constants import PRECISION_TO_SCHEME
+
+        quant_config = self._build_quant_config_for_scoring()
 
         # Quantize
         quantizer = ModelQuantizer(quant_config)
@@ -354,6 +356,55 @@ class SequentialSensitivityAnalyzer:
         quantized_layer = quantizer.freeze(quantized_layer)
 
         return quantized_layer
+
+    def _build_quant_config_for_scoring(self):
+        """
+        Build quantization config matching the target precision.
+
+        Uses the LLMTemplate if available (produces architecture-specific configs),
+        otherwise falls back to building a config from the precision's Quark Spec class.
+        """
+        from quark.torch.quantization.config.config import QConfig, QLayerConfig
+
+        from ...constants import PRECISION_TO_SCHEME
+
+        precision = self.config.precision
+        scheme = PRECISION_TO_SCHEME.get(precision, precision)
+
+        # Prefer template-based config (architecture-specific)
+        if self.template:
+            return self.template.get_config(
+                scheme=scheme,
+                exclude_layers=[],
+            )
+
+        # Fallback: build config from precision spec
+        if precision.startswith("mxfp4"):
+            from quark.torch.quantization.config.config import OCP_MXFP4Spec
+
+            spec = OCP_MXFP4Spec(ch_axis=0).to_quantization_spec()
+        elif precision.startswith("mxfp6"):
+            from quark.torch.quantization.config.config import OCP_MXFP6E3M2Spec
+
+            spec = OCP_MXFP6E3M2Spec(ch_axis=0).to_quantization_spec()
+        elif precision.startswith("int4") or precision.startswith("uint4"):
+            from quark.torch.quantization.config.config import Int4PerGroupSpec
+
+            group_size = 128
+            if "64" in precision:
+                group_size = 64
+            elif "32" in precision:
+                group_size = 32
+            spec = Int4PerGroupSpec(ch_axis=0, group_size=group_size).to_quantization_spec()
+        else:
+            # Default fallback to INT4 for unknown precisions
+            from quark.torch.quantization.config.config import Int4PerGroupSpec
+
+            spec = Int4PerGroupSpec(ch_axis=0, group_size=128).to_quantization_spec()
+
+        return QConfig(
+            global_quant_config=QLayerConfig(weight=spec),
+        )
 
     def analyze(self) -> AnalysisResult:
         """

@@ -94,6 +94,13 @@ class UnifiedConfig:
     # Layer batch size for lazy mode (number of layers to process in parallel)
     layer_batch_size: int = 4
 
+    # Pack MXFP4 weights to compressed format (FP4 + E8M0 scales)
+    # Set False to keep BF16-stored weights for evaluation with lm-eval
+    pack_mxfp4: bool = True
+
+    # Quantization algorithm: "rtn" (round-to-nearest, default), "awq", "gptq"
+    algorithm: str = "rtn"
+
     def __post_init__(self) -> None:
         """Validate configuration after initialization."""
         self.validate()
@@ -147,6 +154,13 @@ class UnifiedConfig:
         if self.max_iterations < 1:
             raise ValueError(f"max_iterations must be >= 1, got {self.max_iterations}")
 
+        # Validate algorithm
+        valid_algorithms = ["rtn", "awq", "gptq"]
+        if self.algorithm not in valid_algorithms:
+            raise ValueError(
+                f"Invalid algorithm '{self.algorithm}'. Must be one of: {valid_algorithms}"
+            )
+
     def to_dict(self) -> dict[str, Any]:
         """Convert configuration to dictionary."""
         return {
@@ -171,6 +185,7 @@ class UnifiedConfig:
             "trust_remote_code": self.trust_remote_code,
             "debug_dir": self.debug_dir,
             "layer_batch_size": self.layer_batch_size,
+            "algorithm": self.algorithm,
         }
 
     @classmethod

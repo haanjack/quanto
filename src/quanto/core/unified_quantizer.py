@@ -262,6 +262,7 @@ class UnifiedQuantizer:
         analyzer = SequentialSensitivityAnalyzer(
             config=self.config,
             cache_on_gpu=self.config.sensitivity_cache_on_gpu,
+            template=self.template,
         )
 
         result = analyzer.analyze()
@@ -332,6 +333,7 @@ class UnifiedQuantizer:
                 config=self.config,
                 cache_on_gpu=cache_on_gpu,
                 initial_exclude_layers=all_excluded,
+                template=self.template,
             )
 
             # Run analysis
@@ -447,16 +449,22 @@ class UnifiedQuantizer:
         quant_scheme = self._get_quant_scheme()
         self._log(f"Using quantization scheme: {quant_scheme}")
 
+        # Determine algorithm (None for RTN, "awq"/"gptq" for advanced)
+        algorithm = self.config.algorithm if self.config.algorithm != "rtn" else None
+        if algorithm:
+            self._log(f"Using quantization algorithm: {algorithm}")
+
         # Create base quant config
         if self.template:
             quant_config = self.template.get_config(
                 scheme=quant_scheme,
+                algorithm=algorithm,
                 exclude_layers=exclude_layers,
             )
         else:
             quant_config = QConfig(
                 global_quant_config=QLayerConfig(
-                    weight=Int4PerGroupSpec(group_size=128).to_quantization_spec()
+                    weight=Int4PerGroupSpec(group_size=128, ch_axis=0).to_quantization_spec()
                 ),
                 exclude=exclude_layers,
             )
@@ -853,6 +861,11 @@ class UnifiedQuantizer:
             self._log("\n=== Assembling HuggingFace format ===")
             self._assemble_hf_format()
 
+            # Pack MXFP4 weights for actual compression
+            if self.config.precision.startswith("mxfp") and self.config.pack_mxfp4:
+                self._log("Packing MXFP4 weights...")
+                self._pack_mxfp4_weights(exclude_layers)
+
             self.timing["total"] = time.time() - total_start
 
             result.success = True
@@ -1160,6 +1173,11 @@ class UnifiedQuantizer:
 
             self.tokenizer.save_pretrained(self.config.output_dir)
 
+            # Pack MXFP4 weights for actual compression
+            if self.config.precision.startswith("mxfp") and self.config.pack_mxfp4:
+                self._log("Packing MXFP4 weights...")
+                self._pack_mxfp4_weights(exclude_layers)
+
             self.timing["total"] = time.time() - total_start
 
             result.success = True
@@ -1179,6 +1197,112 @@ class UnifiedQuantizer:
             traceback.print_exc()
 
         return result
+
+    def _pack_mxfp4_weights(self, exclude_layers: list[str]) -> None:
+        """
+        Post-process exported safetensors to pack MXFP4 weights.
+
+        Replaces BF16 dequantized weights with packed FP4 + E8M0 scale format
+        for actual compression. Only processes quantized Linear weights
+        (those NOT in the exclude list).
+        """
+        from ..utils.mxfp4_pack import pack_mxfp4
+
+        output_dir = Path(self.config.output_dir)
+        index_file = output_dir / "model.safetensors.index.json"
+
+        if not index_file.exists():
+            self._log("Warning: No safetensors index found, skipping MXFP4 packing")
+            return
+
+        with open(index_file) as f:
+            index = json.load(f)
+
+        weight_map = index.get("weight_map", {})
+        group_size = 32  # MXFP4 default group size
+
+        # Identify quantizable weight keys (2D weights not in exclude list)
+        import fnmatch
+
+        def is_excluded(name: str) -> bool:
+            for pattern in exclude_layers:
+                if fnmatch.fnmatch(name, pattern) or pattern in name:
+                    return True
+            return False
+
+        # Group weights by shard file
+        shard_files = set(weight_map.values())
+        total_packed = 0
+
+        for shard_name in sorted(shard_files):
+            shard_path = output_dir / shard_name
+            if not shard_path.exists():
+                continue
+
+            # Load all tensors from this shard
+            tensors = {}
+            with safe_open(str(shard_path), framework="pt", device="cpu") as f:
+                for key in f.keys():
+                    tensors[key] = f.get_tensor(key)
+
+            # Pack eligible weights
+            new_tensors = {}
+            new_weight_map_updates = {}
+
+            for key, tensor in tensors.items():
+                # Check if this is a quantizable Linear weight
+                if (
+                    key.endswith(".weight")
+                    and len(tensor.shape) == 2
+                    and not is_excluded(key)
+                    and tensor.shape[-1] % 2 == 0  # Must be even for packing
+                ):
+                    # Strip .weight suffix to get layer name
+                    layer_name = key[: -len(".weight")]
+
+                    # Check if this layer was actually quantized (not in exclude)
+                    layer_excluded = is_excluded(layer_name)
+                    if not layer_excluded:
+                        packed = pack_mxfp4(tensor, group_size=group_size)
+                        packed_key = f"{layer_name}.weight.packed"
+                        scale_key = f"{layer_name}.weight.scale_e8m0"
+
+                        new_tensors[packed_key] = packed["weight.packed"]
+                        new_tensors[scale_key] = packed["weight.scale_e8m0"]
+                        new_weight_map_updates[packed_key] = shard_name
+                        new_weight_map_updates[scale_key] = shard_name
+                        total_packed += 1
+                        continue
+
+                # Keep non-quantized tensors as-is
+                new_tensors[key] = tensor
+
+            # Re-save shard with packed weights
+            save_file(new_tensors, str(shard_path))
+
+            # Update weight map
+            for old_key in list(weight_map.keys()):
+                if weight_map[old_key] == shard_name and old_key not in new_tensors:
+                    del weight_map[old_key]
+            weight_map.update(new_weight_map_updates)
+
+        # Save updated index
+        index["weight_map"] = weight_map
+        with open(index_file, "w") as f:
+            json.dump(index, f, indent=2)
+
+        # Update config.json with packed format info
+        config_file = output_dir / "config.json"
+        if config_file.exists():
+            with open(config_file) as f:
+                config = json.load(f)
+            if "quantization_config" in config:
+                config["quantization_config"]["weight_format"] = "packed_mxfp4"
+                config["quantization_config"]["mxfp4_group_size"] = group_size
+            with open(config_file, "w") as f:
+                json.dump(config, f, indent=2)
+
+        self._log(f"Packed {total_packed} weight tensors to MXFP4 format")
 
     def _print_summary(self, result: QuantizationResult) -> None:
         """Print quantization summary."""

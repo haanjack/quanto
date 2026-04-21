@@ -46,6 +46,7 @@ MODEL_TYPE_MAPPINGS: dict[str, str] = {
     "phi": "phi",
     "phi3": "phi3",
     "phi4": "phi3",
+    "solar_open": "qwen3_moe",
 }
 
 # Default layers to exclude from quantization
@@ -78,7 +79,7 @@ SUPPORTED_PRECISIONS: list[str] = [
 
 # Supported quantization algorithms
 SUPPORTED_ALGORITHMS: list[str] = [
+    "rtn",
     "awq",
     "gptq",
-    "smoothquant",
 ]
