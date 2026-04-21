@@ -13,7 +13,6 @@ from .int4_pack import (
     quantize_to_int4,
     unpack_int32_to_int4,
 )
-from .mxfp4_pack import pack_mxfp4, unpack_mxfp4
 from .logging import Timer, get_logger, log_with_timestamp
 from .memory import (
     clear_gpu_memory,
@@ -42,9 +41,6 @@ __all__ = [
     "pack_int4_to_int32",
     "unpack_int32_to_int4",
     "pack_layer_weights",
-    # MXFP4 Packing
-    "pack_mxfp4",
-    "unpack_mxfp4",
     # Logging
     "get_logger",
     "log_with_timestamp",

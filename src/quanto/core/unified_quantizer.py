@@ -861,10 +861,6 @@ class UnifiedQuantizer:
             self._log("\n=== Assembling HuggingFace format ===")
             self._assemble_hf_format()
 
-            # Pack MXFP4 weights for actual compression
-            if self.config.precision.startswith("mxfp") and self.config.pack_mxfp4:
-                self._log("Packing MXFP4 weights...")
-                self._pack_mxfp4_weights(exclude_layers)
 
             self.timing["total"] = time.time() - total_start
 
@@ -1173,10 +1169,6 @@ class UnifiedQuantizer:
 
             self.tokenizer.save_pretrained(self.config.output_dir)
 
-            # Pack MXFP4 weights for actual compression
-            if self.config.precision.startswith("mxfp") and self.config.pack_mxfp4:
-                self._log("Packing MXFP4 weights...")
-                self._pack_mxfp4_weights(exclude_layers)
 
             self.timing["total"] = time.time() - total_start
 
@@ -1198,111 +1190,86 @@ class UnifiedQuantizer:
 
         return result
 
-    def _pack_mxfp4_weights(self, exclude_layers: list[str]) -> None:
+    def _run_file2file_quantization(self) -> QuantizationResult:
         """
-        Post-process exported safetensors to pack MXFP4 weights.
+        Run file-to-file quantization using Quark's quantize_model_per_safetensor.
 
-        Replaces BF16 dequantized weights with packed FP4 + E8M0 scale format
-        for actual compression. Only processes quantized Linear weights
-        (those NOT in the exclude list).
+        Processes each safetensors shard independently without loading the full model
+        into memory. Produces properly packed uint8 weights with E8M0 scales that
+        vLLM can load natively as a Quark-quantized checkpoint.
+
+        This is the recommended path for MXFP4/MXFP6 quantization, matching how AMD
+        publishes official MXFP4 models (e.g., Kimi-K2.5-MXFP4).
         """
-        from ..utils.mxfp4_pack import pack_mxfp4
+        from quark.torch.quantization.file2file_quantization import quantize_model_per_safetensor
 
-        output_dir = Path(self.config.output_dir)
-        index_file = output_dir / "model.safetensors.index.json"
+        total_start = time.time()
+        result = QuantizationResult(success=False)
 
-        if not index_file.exists():
-            self._log("Warning: No safetensors index found, skipping MXFP4 packing")
-            return
+        try:
+            # Setup (load config, detect model type, get template)
+            self._setup()
 
-        with open(index_file) as f:
-            index = json.load(f)
+            # Determine exclusions (including sensitivity analysis if enabled)
+            exclude_layers = self._determine_exclude_layers()
+            result.exclude_layers_used = exclude_layers
+            self._log(f"Exclude layers: {exclude_layers}")
 
-        weight_map = index.get("weight_map", {})
-        group_size = 32  # MXFP4 default group size
+            # Create quantization config
+            quant_config = self._create_quant_config(exclude_layers)
 
-        # Identify quantizable weight keys (2D weights not in exclude list)
-        import fnmatch
+            self._log(f"\n{'=' * 60}")
+            self._log("FILE-TO-FILE QUANTIZATION")
+            self._log(f"{'=' * 60}")
+            self._log(f"Model: {self.config.model_path}")
+            self._log(f"Output: {self.config.output_dir}")
+            self._log(f"Precision: {self.config.precision}")
+            self._log(f"Device: {self.config.device}")
+            self._log(f"{'=' * 60}")
 
-        def is_excluded(name: str) -> bool:
-            for pattern in exclude_layers:
-                if fnmatch.fnmatch(name, pattern) or pattern in name:
-                    return True
-            return False
+            # Resolve model path to local directory
+            # file2file requires a local path with safetensors files, not a HF hub ID
+            model_path = self.config.model_path
+            if not os.path.isdir(model_path):
+                from huggingface_hub import snapshot_download
 
-        # Group weights by shard file
-        shard_files = set(weight_map.values())
-        total_packed = 0
+                self._log(f"Downloading model from HuggingFace: {model_path}")
+                model_path = snapshot_download(model_path)
+                self._log(f"Model downloaded to: {model_path}")
 
-        for shard_name in sorted(shard_files):
-            shard_path = output_dir / shard_name
-            if not shard_path.exists():
-                continue
+            # Run file-to-file quantization
+            self._log("Running file-to-file quantization...")
+            quant_start = time.time()
 
-            # Load all tensors from this shard
-            tensors = {}
-            with safe_open(str(shard_path), framework="pt", device="cpu") as f:
-                for key in f.keys():
-                    tensors[key] = f.get_tensor(key)
+            quantize_model_per_safetensor(
+                pretrained_model_path=model_path,
+                quant_config=quant_config,
+                save_path=self.config.output_dir,
+                device=self.config.device,
+            )
 
-            # Pack eligible weights
-            new_tensors = {}
-            new_weight_map_updates = {}
+            self.timing["quantization"] = time.time() - quant_start
+            self._log(f"File-to-file quantization completed in {self.timing['quantization']:.2f}s")
 
-            for key, tensor in tensors.items():
-                # Check if this is a quantizable Linear weight
-                if (
-                    key.endswith(".weight")
-                    and len(tensor.shape) == 2
-                    and not is_excluded(key)
-                    and tensor.shape[-1] % 2 == 0  # Must be even for packing
-                ):
-                    # Strip .weight suffix to get layer name
-                    layer_name = key[: -len(".weight")]
+            self.timing["total"] = time.time() - total_start
 
-                    # Check if this layer was actually quantized (not in exclude)
-                    layer_excluded = is_excluded(layer_name)
-                    if not layer_excluded:
-                        packed = pack_mxfp4(tensor, group_size=group_size)
-                        packed_key = f"{layer_name}.weight.packed"
-                        scale_key = f"{layer_name}.weight.scale_e8m0"
+            result.success = True
+            result.output_dir = self.config.output_dir
+            result.model_type = self.model_type
+            result.quant_scheme = self._get_quant_scheme()
+            result.precision = self.config.precision
+            result.timing = self.timing
 
-                        new_tensors[packed_key] = packed["weight.packed"]
-                        new_tensors[scale_key] = packed["weight.scale_e8m0"]
-                        new_weight_map_updates[packed_key] = shard_name
-                        new_weight_map_updates[scale_key] = shard_name
-                        total_packed += 1
-                        continue
+            self._print_summary(result)
 
-                # Keep non-quantized tensors as-is
-                new_tensors[key] = tensor
+        except Exception as e:
+            result.success = False
+            result.error_message = str(e)
+            self._log(f"Error during quantization: {e}")
+            import traceback
+            traceback.print_exc()
 
-            # Re-save shard with packed weights
-            save_file(new_tensors, str(shard_path))
-
-            # Update weight map
-            for old_key in list(weight_map.keys()):
-                if weight_map[old_key] == shard_name and old_key not in new_tensors:
-                    del weight_map[old_key]
-            weight_map.update(new_weight_map_updates)
-
-        # Save updated index
-        index["weight_map"] = weight_map
-        with open(index_file, "w") as f:
-            json.dump(index, f, indent=2)
-
-        # Update config.json with packed format info
-        config_file = output_dir / "config.json"
-        if config_file.exists():
-            with open(config_file) as f:
-                config = json.load(f)
-            if "quantization_config" in config:
-                config["quantization_config"]["weight_format"] = "packed_mxfp4"
-                config["quantization_config"]["mxfp4_group_size"] = group_size
-            with open(config_file, "w") as f:
-                json.dump(config, f, indent=2)
-
-        self._log(f"Packed {total_packed} weight tensors to MXFP4 format")
+        return result
 
     def _print_summary(self, result: QuantizationResult) -> None:
         """Print quantization summary."""
@@ -1345,7 +1312,10 @@ class UnifiedQuantizer:
             strategy = self.config.memory_strategy
 
         # Dispatch to appropriate strategy
-        if strategy == "lazy":
+        # Use file-to-file for MXFP precisions (produces vLLM-compatible packed uint8)
+        if self.config.precision.startswith("mxfp"):
+            return self._run_file2file_quantization()
+        elif strategy == "lazy":
             return self._run_lazy_quantization()
         elif strategy == "layerwise_cpu":
             return self._run_layerwise_cpu_quantization()

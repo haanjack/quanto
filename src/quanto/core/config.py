@@ -94,10 +94,6 @@ class UnifiedConfig:
     # Layer batch size for lazy mode (number of layers to process in parallel)
     layer_batch_size: int = 4
 
-    # Pack MXFP4 weights to compressed format (FP4 + E8M0 scales)
-    # Set False to keep BF16-stored weights for evaluation with lm-eval
-    pack_mxfp4: bool = True
-
     # Quantization algorithm: "rtn" (round-to-nearest, default), "awq", "gptq"
     algorithm: str = "rtn"
 
