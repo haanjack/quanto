@@ -216,6 +216,55 @@ class UnifiedQuantizer:
             exclude.extend(sensitive_layers)
 
         # Remove duplicates
+        exclude = list(set(exclude))
+
+        # Align exclusions for vLLM fused layer compatibility
+        exclude = self._align_exclude_groups(exclude)
+
+        return exclude
+
+    def _align_exclude_groups(self, exclude: list[str]) -> list[str]:
+        """
+        Ensure fused projection groups are excluded together for vLLM compatibility.
+
+        vLLM fuses certain projections into single linear layers:
+        - qkv_proj: q_proj + k_proj + v_proj (must all share same scheme)
+        - gate_up_proj: gate_proj + up_proj (must all share same scheme)
+
+        If any projection in a group is excluded, exclude the entire group.
+        """
+        # Define fused groups: suffixes that must be excluded together
+        fused_groups = [
+            ["self_attn.q_proj", "self_attn.k_proj", "self_attn.v_proj"],
+            ["mlp.gate_proj", "mlp.up_proj"],
+            ["mlp.shared_experts.gate_proj", "mlp.shared_experts.up_proj"],
+        ]
+
+        # Find layer prefixes from exclude list (e.g., "model.layers.0")
+        added = set()
+        for layer_name in list(exclude):
+            # Skip glob patterns
+            if "*" in layer_name:
+                continue
+
+            for group in fused_groups:
+                # Check if this excluded layer belongs to a fused group
+                for suffix in group:
+                    if layer_name.endswith(suffix):
+                        # Extract the prefix (e.g., "model.layers.0")
+                        prefix = layer_name[: -len(suffix)]
+                        # Add all members of this group
+                        for member_suffix in group:
+                            member = prefix + member_suffix
+                            if member not in exclude and member not in added:
+                                added.add(member)
+                                self._log(f"  + {member} (aligned with {layer_name})")
+                        break
+
+        if added:
+            self._log(f"Aligned {len(added)} additional layers for vLLM fused layer compatibility")
+
+        exclude.extend(added)
         return list(set(exclude))
 
     def _analyze_sensitive_layers(self) -> list[str]:
