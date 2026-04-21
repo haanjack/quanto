@@ -14,7 +14,7 @@ pip install -e ".[dev]"              # dev (pytest, ruff)
 pip install -e ".[nvidia]"           # with NVIDIA extras
 pip install -e ".[rocm]"             # with ROCm extras
 
-# Tests
+# Tests (requires Quark — run on remote server with amd-quark installed)
 pytest tests/ -v                     # all tests
 pytest tests/test_unified_quantizer.py -v   # single file
 pytest tests/test_unified_quantizer.py::TestUnifiedConfig::test_default_config -v  # single test
@@ -24,39 +24,56 @@ ruff check src/                      # lint
 ruff check src/ --fix                # lint with autofix
 ruff format src/                     # format
 
-# Quantize a model (CLI)
-python -m quanto --model_path /path/to/model --output_dir ./output --precision int4
-python -m quanto --model_path /path --sensitivity_analysis --sensitivity_threshold 0.12
+# Quantize a model (Python API — preferred, CLI is incomplete)
+python -c "
+from quanto import UnifiedQuantizer, UnifiedConfig
+config = UnifiedConfig(
+    model_path='model/path', output_dir='./output',
+    precision='mxfp4', sensitivity_analysis=True,
+    sensitivity_threshold=0.12,
+)
+UnifiedQuantizer(config).run()
+"
 
 # Dequantize
 python -m quanto --dequantize --model_path ./quantized --output_dir ./dequantized
 
 # Docker-based integration tests
-./scripts/run_tests.sh --gpu nvidia --test all
+./scripts/run_e2e_tests.sh rocm       # all ROCm tests
+./scripts/run_e2e_tests.sh cuda 1,2   # specific CUDA tests
 ```
 
 ## Architecture
 
 ### Pipeline flow
-CLI (`__main__.py`) -> `UnifiedConfig` (dataclass validation) -> `UnifiedQuantizer.run()` -> `QuantizationResult`
+`UnifiedConfig` (dataclass validation) -> `UnifiedQuantizer.run()` -> strategy dispatch -> `QuantizationResult`
+
+### Quantization paths
+
+**MXFP4/MXFP6** — Uses Quark's `quantize_model_per_safetensor` (file2file). Processes each safetensors shard independently without loading the full model. Produces packed uint8 weights + E8M0 scales compatible with vLLM's Quark loader.
+
+**INT4/INT8/FP8** — Uses in-memory quantization via `ModelQuantizer` + `export_safetensors`. Three memory strategies:
+- `full` — entire model on GPU
+- `layerwise_cpu` — model on CPU, layers quantized one-by-one on GPU
+- `lazy` — weights loaded on-demand from safetensors
 
 ### Core modules (`src/quanto/core/`)
-- **`config.py`** — `UnifiedConfig` dataclass with ~23 fields and `__post_init__` validation. `QuantizationConfig` is a backward-compat alias.
-- **`unified_quantizer.py`** — Main quantizer implementing 4 memory strategies: `full` (entire model on GPU), `layerwise_cpu` (model on CPU, layers quantized one-by-one on GPU), `lazy` (weights loaded on-demand from safetensors), `auto` (selects based on model size vs GPU memory).
-- **`base_quantizer.py`** — Abstract base class, `QuantizationResult` dataclass.
-- **`dequantize.py`** — INT4 -> BF16/FP16 conversion.
-- **`sensitivity/`** — Sequential sensitivity analysis: `SequentialSensitivityAnalyzer` scores per-layer quantization impact, `ActivationCache` manages GPU/CPU caching, `SensitivityScorer` computes perplexity-based metrics.
+- **`config.py`** — `UnifiedConfig` dataclass. Key fields: `precision`, `memory_strategy`, `algorithm` (rtn/awq/gptq), `sensitivity_analysis`, `sensitivity_threshold`, `exclude_layers`.
+- **`unified_quantizer.py`** — Main quantizer. `run()` dispatches to `_run_file2file_quantization()` for MXFP or `_run_full_gpu_quantization()` / `_run_lazy_quantization()` for INT4/INT8. Contains `_determine_exclude_layers()` with sensitivity analysis and `_align_exclude_groups()` for vLLM fused layer compatibility.
+- **`sensitivity/sequential_analyzer.py`** — Iterative sensitivity analysis. Scores each layer using the actual target precision (MXFP4 uses `OCP_MXFP4Spec`, not INT4 proxy). `_build_quant_config_for_scoring()` maps precision to the correct Quark spec class.
 
 ### Supporting modules
-- **`constants.py`** — `PRECISION_TO_SCHEME` mapping (e.g., `"int4"` -> `"int4_wo_128"`), `MODEL_TYPE_MAPPINGS`, `DEFAULT_EXCLUDE_PATTERNS`.
-- **`analysis/layer_analyzer.py`** — Automatic detection of layers to exclude (lm_head, MoE gates, embeddings/norms with aggressive mode).
+- **`constants.py`** — `PRECISION_TO_SCHEME` mapping, `MODEL_TYPE_MAPPINGS` (includes `solar_open` -> `qwen3_moe`), `SUPPORTED_ALGORITHMS`.
+- **`utils/model_utils.py`** — `detect_model_type()` and `get_template()` for Quark `LLMTemplate` lookup.
 - **`utils/calibration.py`** — `CalibrationDataManager` loads from HuggingFace datasets or local files.
 - **`utils/int4_pack.py`** — INT4 <-> INT32 packing/unpacking.
-- **`utils/memory.py`** — GPU memory tracking and cleanup.
-- **`utils/model_utils.py`** — Model type detection and Quark template lookup.
 
 ### External dependency
-AMD Quark is vendored as a git submodule in `contribs/quark/`. It provides the quantization scheme templates for each model architecture.
+AMD Quark is vendored as a git submodule in `contribs/quark/`. Key Quark APIs used:
+- `LLMTemplate.get_config(scheme, algorithm, exclude_layers)` — generates per-architecture quantization configs
+- `quantize_model_per_safetensor()` — file-to-file quantization (MXFP4 path)
+- `ModelQuantizer` / `export_safetensors()` — in-memory quantization (INT4/INT8 path)
+- `OCP_MXFP4Spec`, `Int4PerGroupSpec` — precision-specific quantization specs
 
 ## Code style
 
@@ -67,7 +84,11 @@ AMD Quark is vendored as a git submodule in `contribs/quark/`. It provides the q
 
 ## Key patterns
 
-- **Backward compatibility aliases**: `QuantizationConfig = UnifiedConfig`, `AutoQuantizer` wraps `UnifiedQuantizer`
-- **Valid precisions**: `int4`, `int4_64`, `int4_32`, `int8`, `fp8`, `mxfp4`, `mxfp6`, `uint4`
-- **Memory strategies**: `full`, `layerwise_cpu`, `lazy`, `auto`
-- **Export formats**: `quark` (native, default), `awq`, `gptq` (vLLM compat, INT4 only)
+- **vLLM fused layer alignment**: `_align_exclude_groups()` ensures q/k/v projections and gate/up projections are excluded together (vLLM fuses these into `qkv_proj` and `gate_up_proj`)
+- **AWQ/GPTQ**: Set `algorithm="awq"` or `"gptq"` in config — passed to `LLMTemplate.get_config(algorithm=...)`. Quark handles execution internally via `AwqProcessor`/`GptqProcessor`.
+- **Backward compat aliases**: `QuantizationConfig = UnifiedConfig`, `AutoQuantizer = UnifiedQuantizer`
+- **HF hub resolution**: File2file path auto-resolves HF hub IDs to local cache via `snapshot_download`
+
+## Testing environment
+
+Remote server mi355-gpu-16 (aac14 cluster) with MI355 GPUs. Use podman containers with `rocm/vllm-dev:nightly` image which includes PyTorch, Quark, and all dependencies. See `memory/reference_mi355_server.md` for access details.

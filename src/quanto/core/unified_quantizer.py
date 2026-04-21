@@ -201,6 +201,9 @@ class UnifiedQuantizer:
         # Add standard patterns
         exclude.extend(["*embed*", "*norm*"])
 
+        # Exclude MoE router gates (not gate_proj FFN layers)
+        exclude.append("*.gate")
+
         if self.config.aggressive_exclusion:
             exclude.extend(["*gate*"])
 
