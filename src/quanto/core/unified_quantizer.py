@@ -1488,11 +1488,7 @@ class UnifiedQuantizer:
         else:
             strategy = self.config.memory_strategy
 
-        # Dispatch to appropriate strategy
-        # Use file-to-file for MXFP precisions (produces vLLM-compatible packed uint8)
-        if self.config.precision.startswith("mxfp"):
-            return self._run_file2file_quantization()
-        elif strategy == "lazy":
+        if strategy == "lazy":
             return self._run_lazy_quantization()
         elif strategy == "layerwise_cpu":
             return self._run_layerwise_cpu_quantization()
