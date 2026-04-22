@@ -47,6 +47,9 @@ MODEL_TYPE_MAPPINGS: dict[str, str] = {
     "phi3": "phi3",
     "phi4": "phi3",
     "solar_open": "qwen3_moe",
+    "exaone": "llama",
+    "exaone4_5": "llama",
+    "exaone4_5_text": "llama",
 }
 
 # Default layers to exclude from quantization

@@ -35,9 +35,17 @@ def detect_model_type(model_path: str, trust_remote_code: bool = True) -> str:
             config = json.load(f)
         model_type = config.get("model_type", config.get("architectures", ["unknown"])[0])
     else:
-        # Load config from model using transformers
-        config = AutoConfig.from_pretrained(model_path, trust_remote_code=trust_remote_code)
-        model_type = getattr(config, "model_type", getattr(config, "architectures", ["unknown"])[0])
+        # Try AutoConfig first, fall back to JSON download for unsupported model types
+        try:
+            config = AutoConfig.from_pretrained(model_path, trust_remote_code=trust_remote_code)
+            model_type = getattr(config, "model_type", getattr(config, "architectures", ["unknown"])[0])
+        except (ValueError, KeyError):
+            from huggingface_hub import hf_hub_download
+
+            config_file = hf_hub_download(model_path, "config.json")
+            with open(config_file) as f:
+                config = json.load(f)
+            model_type = config.get("model_type", config.get("architectures", ["unknown"])[0])
 
     return model_type
 

@@ -117,18 +117,28 @@ class UnifiedQuantizer:
         self._log("Setting up quantization...")
 
         # Load HuggingFace config (no weights)
-        self.hf_config = AutoConfig.from_pretrained(
-            self.config.model_path, trust_remote_code=self.config.trust_remote_code
-        )
+        try:
+            self.hf_config = AutoConfig.from_pretrained(
+                self.config.model_path, trust_remote_code=self.config.trust_remote_code
+            )
+        except (ValueError, KeyError) as e:
+            # Fallback for models not yet supported by transformers (e.g., exaone4_5)
+            self._log(f"AutoConfig failed ({e.__class__.__name__}), using JSON fallback")
+            self.hf_config = self._load_config_from_json()
+
         self._detect_model_type()
         self._get_template()
 
         # Load tokenizer
-        self.tokenizer = AutoTokenizer.from_pretrained(
-            self.config.model_path, trust_remote_code=self.config.trust_remote_code
-        )
-        if self.tokenizer.pad_token is None:
-            self.tokenizer.pad_token = self.tokenizer.eos_token
+        try:
+            self.tokenizer = AutoTokenizer.from_pretrained(
+                self.config.model_path, trust_remote_code=self.config.trust_remote_code
+            )
+            if self.tokenizer.pad_token is None:
+                self.tokenizer.pad_token = self.tokenizer.eos_token
+        except (ValueError, KeyError, OSError) as e:
+            self._log(f"AutoTokenizer failed ({e.__class__.__name__}), skipping tokenizer")
+            self.tokenizer = None
 
         # Create output directory
         os.makedirs(self.config.output_dir, exist_ok=True)
@@ -136,6 +146,29 @@ class UnifiedQuantizer:
 
         self.timing["setup"] = time.time() - start_time
         self._log(f"Setup completed in {self.timing['setup']:.2f}s")
+
+    def _load_config_from_json(self):
+        """Fallback config loading when AutoConfig fails (unsupported model types)."""
+        from pathlib import Path
+        from types import SimpleNamespace
+
+        model_path = Path(self.config.model_path)
+        config_file = model_path / "config.json"
+
+        # If model_path is a HF hub ID, resolve to local cache
+        if not config_file.exists():
+            from huggingface_hub import hf_hub_download
+
+            config_file = Path(hf_hub_download(self.config.model_path, "config.json"))
+
+        with open(config_file) as f:
+            config_dict = json.load(f)
+
+        # For multimodal models, text_config holds the LLM settings
+        text_config = config_dict.get("text_config", {})
+        merged = {**config_dict, **text_config}
+
+        return SimpleNamespace(**merged)
 
     def _get_layer_info(self) -> dict[str, Any]:
         """Get layer information from config."""
@@ -1352,22 +1385,25 @@ class UnifiedQuantizer:
         Returns:
             QuantizationResult with details of the quantization
         """
-        # Determine strategy
+        # Use file-to-file for MXFP precisions (produces vLLM-compatible packed uint8)
+        # This path skips auto-strategy detection since it doesn't need the model in memory
+        if self.config.precision.startswith("mxfp"):
+            return self._run_file2file_quantization()
+
+        # Determine memory strategy for non-MXFP precisions
         if self.config.memory_strategy == "auto":
-            # Need to load config first for auto-detection
-            self.hf_config = AutoConfig.from_pretrained(
-                self.config.model_path, trust_remote_code=self.config.trust_remote_code
-            )
+            try:
+                self.hf_config = AutoConfig.from_pretrained(
+                    self.config.model_path, trust_remote_code=self.config.trust_remote_code
+                )
+            except (ValueError, KeyError):
+                self.hf_config = self._load_config_from_json()
             strategy = self._auto_detect_strategy()
             self._log(f"Auto-detected memory strategy: {strategy}")
         else:
             strategy = self.config.memory_strategy
 
-        # Dispatch to appropriate strategy
-        # Use file-to-file for MXFP precisions (produces vLLM-compatible packed uint8)
-        if self.config.precision.startswith("mxfp"):
-            return self._run_file2file_quantization()
-        elif strategy == "lazy":
+        if strategy == "lazy":
             return self._run_lazy_quantization()
         elif strategy == "layerwise_cpu":
             return self._run_layerwise_cpu_quantization()
