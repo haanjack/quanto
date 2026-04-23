@@ -50,6 +50,9 @@ MODEL_TYPE_MAPPINGS: dict[str, str] = {
     "exaone": "llama",
     "exaone4_5": "llama",
     "exaone4_5_text": "llama",
+    "exaone_moe": "qwen3_moe",
+    "kimi_k2": "kimi_k25",
+    "kimi_k25": "kimi_k25",
 }
 
 # Default layers to exclude from quantization

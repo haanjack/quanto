@@ -24,8 +24,22 @@ ruff check src/                      # lint
 ruff check src/ --fix                # lint with autofix
 ruff format src/                     # format
 
-# Quantize a model (Python API — preferred, CLI is incomplete)
-python -c "
+# Quantize a model (CLI)
+python -m quanto \
+    --model_path model/path \
+    --output_dir ./output \
+    --precision mxfp4 \
+    --sensitivity_analysis \
+    --sensitivity_threshold 0.12
+
+# Quantize with explicit exclude list (e.g., attn-excl strategy)
+python -m quanto \
+    --model_path model/path \
+    --output_dir ./output \
+    --precision mxfp4 \
+    --exclude_layers_file exclude.json
+
+# Quantize (Python API)
 from quanto import UnifiedQuantizer, UnifiedConfig
 config = UnifiedConfig(
     model_path='model/path', output_dir='./output',
@@ -33,7 +47,6 @@ config = UnifiedConfig(
     sensitivity_threshold=0.12,
 )
 UnifiedQuantizer(config).run()
-"
 
 # Dequantize
 python -m quanto --dequantize --model_path ./quantized --output_dir ./dequantized
@@ -63,7 +76,8 @@ python -m quanto --dequantize --model_path ./quantized --output_dir ./dequantize
 - **`sensitivity/sequential_analyzer.py`** — Iterative sensitivity analysis. Scores each layer using the actual target precision (MXFP4 uses `OCP_MXFP4Spec`, not INT4 proxy). `_build_quant_config_for_scoring()` maps precision to the correct Quark spec class.
 
 ### Supporting modules
-- **`constants.py`** — `PRECISION_TO_SCHEME` mapping, `MODEL_TYPE_MAPPINGS` (includes `solar_open` -> `qwen3_moe`), `SUPPORTED_ALGORITHMS`.
+- **`constants.py`** — `PRECISION_TO_SCHEME` mapping, `MODEL_TYPE_MAPPINGS` (includes `solar_open` -> `qwen3_moe`, `kimi_k2` -> `kimi_k25`), `SUPPORTED_ALGORITHMS`.
+- **`auto_quantize.py`** — CLI `main()` entry point. Parses args and creates `UnifiedConfig`. Supports `--exclude_layers_file` for JSON exclude lists.
 - **`utils/model_utils.py`** — `detect_model_type()` and `get_template()` for Quark `LLMTemplate` lookup.
 - **`utils/calibration.py`** — `CalibrationDataManager` loads from HuggingFace datasets or local files.
 - **`utils/int4_pack.py`** — INT4 <-> INT32 packing/unpacking.

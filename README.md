@@ -82,53 +82,6 @@ docker build -f docker/Dockerfile.rocm.dev -t quanto:rocm-dev .
 docker run --device=/dev/kfd --device=/dev/dri --group-add video -v $(pwd):/workspace -w /workspace quanto:rocm-dev bash
 ```
 
-## Project Structure
-
-```
-quanto/
-├── pyproject.toml          # Package configuration
-├── README.md               # This file
-├── requirements.txt        # Base requirements
-├── requirements-nvidia.txt # NVIDIA-specific deps
-├── requirements-rocm.txt   # ROCm-specific deps
-├── contribs/
-│   └── quark/              # AMD Quark (submodule)
-├── docker/
-│   ├── Dockerfile.cuda       # Pre-built for CUDA
-│   ├── Dockerfile.cuda.dev   # Development for CUDA
-│   ├── Dockerfile.rocm       # Pre-built for ROCm
-│   └── Dockerfile.rocm.dev   # Development for ROCm
-├── docs/
-│   └── examples.md         # Experiment results
-├── examples/               # Example scripts
-├── scripts/
-│   └── repack.py           # Weight packing utilities
-├── src/quanto/             # Main package
-│   ├── __init__.py
-│   ├── __main__.py         # CLI entry point
-│   ├── constants.py        # Shared constants
-│   ├── core/               # Quantization engines
-│   │   ├── base_quantizer.py
-│   │   ├── auto_quantize.py
-│   │   ├── layerwise_quant.py
-│   │   ├── lazy_layerwise_quant.py
-│   │   ├── iterative_quantizer.py
-│   │   └── dequantize.py
-│   ├── analysis/           # Layer analysis
-│   │   ├── layer_analyzer.py
-│   │   └── sensitivity_analyzer.py
-│   ├── export/             # Export utilities
-│   │   ├── hf_export.py
-│   │   └── model_assembler.py
-│   └── utils/              # Shared utilities
-│       ├── calibration.py
-│       ├── int4_pack.py
-│       ├── logging.py
-│       ├── memory.py
-│       └── model_utils.py
-└── tests/                  # Test suite
-```
-
 ## Usage
 
 ### Basic Usage
