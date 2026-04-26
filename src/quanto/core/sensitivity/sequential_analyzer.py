@@ -359,7 +359,7 @@ class SequentialSensitivityAnalyzer:
 
     def _build_quant_config_for_scoring(self):
         """
-        Build quantization config matching the target precision.
+        Build quantization config matching the target precision and algorithm.
 
         Uses the LLMTemplate if available (produces architecture-specific configs),
         otherwise falls back to building a config from the precision's Quark Spec class.
@@ -369,12 +369,14 @@ class SequentialSensitivityAnalyzer:
         from ...constants import PRECISION_TO_SCHEME
 
         precision = self.config.precision
+        algorithm = (self.config.algorithm or "rtn").lower()
         scheme = PRECISION_TO_SCHEME.get(precision, precision)
 
         # Prefer template-based config (architecture-specific)
         if self.template:
             return self.template.get_config(
                 scheme=scheme,
+                algorithm=algorithm if algorithm != "rtn" else None,
                 exclude_layers=[],
             )
 
@@ -402,6 +404,8 @@ class SequentialSensitivityAnalyzer:
 
             spec = Int4PerGroupSpec(ch_axis=0, group_size=128).to_quantization_spec()
 
+        # Note: algorithm parameter (if needed by Quark) would be passed here
+        # Currently Quark's fallback configs don't take algorithm parameter
         return QConfig(
             global_quant_config=QLayerConfig(weight=spec),
         )

@@ -43,6 +43,7 @@ from ..utils import (
 from .base_quantizer import QuantizationResult
 from .config import UnifiedConfig
 from .sensitivity import SequentialSensitivityAnalyzer
+from .sensitivity.scorer import SensitivityMetric
 
 
 class UnifiedQuantizer:
@@ -78,6 +79,8 @@ class UnifiedQuantizer:
         self.safetensors_files = []
         self.weight_index = {}  # Maps weight name to file path
         self.timing = {}
+        self._resolved_algorithm: str | None = None
+        self._calibration_loader_cache = None
 
     def _log(self, message: str) -> None:
         """Print log message with timestamp."""
@@ -110,6 +113,61 @@ class UnifiedQuantizer:
         else:
             self._log(f"Warning: No template found for model type '{self.model_type}'")
         return self.template
+
+    def _resolve_algorithm(self) -> str | None:
+        """Resolve the requested quantization algorithm to pass to Quark.
+
+        Returns:
+            None for RTN (Quark default), algorithm name for AWQ/GPTQ
+        """
+        if self._resolved_algorithm is not None:
+            return self._resolved_algorithm
+
+        algorithm = (self.config.algorithm or "rtn").lower()
+        if algorithm == "rtn":
+            self._resolved_algorithm = None
+            return None
+
+        # AWQ and GPTQ are now supported via Quark's LLMTemplate
+        if algorithm in {"awq", "gptq"}:
+            self._resolved_algorithm = algorithm
+            return algorithm
+
+        raise ValueError(f"Unsupported quantization algorithm: '{self.config.algorithm}'")
+
+    def _resolve_sensitivity_metric(self) -> SensitivityMetric:
+        """Resolve configured sensitivity metric string to enum value."""
+        metric_name = (self.config.sensitivity_metric or "relative").lower()
+        mapping = {
+            "relative": SensitivityMetric.RELATIVE_NORM,
+            "mse": SensitivityMetric.MSE,
+            "mae": SensitivityMetric.MAE,
+            "cosine": SensitivityMetric.COSINE,
+            "kl": SensitivityMetric.KL_DIVERGENCE,
+        }
+        try:
+            return mapping[metric_name]
+        except KeyError as exc:
+            valid = ", ".join(mapping.keys())
+            raise ValueError(
+                f"Invalid sensitivity_metric '{self.config.sensitivity_metric}'. "
+                f"Must be one of: {valid}"
+            ) from exc
+
+    def _get_calibration_dataloader(self):
+        """Load and cache the calibration dataloader."""
+        if self._calibration_loader_cache is None:
+            if self.tokenizer is None:
+                raise RuntimeError("Tokenizer must be initialized before loading calibration data")
+            self._calibration_loader_cache = get_calib_dataloader(
+                dataset_name_or_path=self.config.calibration_data,
+                tokenizer=self.tokenizer,
+                batch_size=self.config.batch_size,
+                num_calib_data=self.config.num_calib_samples,
+                seqlen=self.config.seq_len,
+                device=self.config.device,
+            )
+        return self._calibration_loader_cache
 
     def _setup(self) -> None:
         """Load config, tokenizer, and build weight index."""
@@ -346,6 +404,7 @@ class UnifiedQuantizer:
 
         analyzer = SequentialSensitivityAnalyzer(
             config=self.config,
+            metric=self._resolve_sensitivity_metric(),
             cache_on_gpu=self.config.sensitivity_cache_on_gpu,
             template=self.template,
         )
@@ -416,6 +475,7 @@ class UnifiedQuantizer:
             # Create analyzer with current exclusion list
             analyzer = SequentialSensitivityAnalyzer(
                 config=self.config,
+                metric=self._resolve_sensitivity_metric(),
                 cache_on_gpu=cache_on_gpu,
                 initial_exclude_layers=all_excluded,
                 template=self.template,
@@ -534,10 +594,12 @@ class UnifiedQuantizer:
         quant_scheme = self._get_quant_scheme()
         self._log(f"Using quantization scheme: {quant_scheme}")
 
-        # Determine algorithm (None for RTN, "awq"/"gptq" for advanced)
-        algorithm = self.config.algorithm if self.config.algorithm != "rtn" else None
+        # Determine algorithm (None for RTN, raise for unsupported)
+        algorithm = self._resolve_algorithm()
         if algorithm:
             self._log(f"Using quantization algorithm: {algorithm}")
+        else:
+            self._log("Using quantization algorithm: rtn")
 
         # Create base quant config
         if self.template:
@@ -1221,14 +1283,7 @@ class UnifiedQuantizer:
 
             # Get calibration data
             self._log("Loading calibration data...")
-            calib_loader = get_calib_dataloader(
-                dataset_name_or_path=self.config.calibration_data,
-                tokenizer=self.tokenizer,
-                batch_size=self.config.batch_size,
-                num_calib_data=self.config.num_calib_samples,
-                seqlen=self.config.seq_len,
-                device=self.config.device,
-            )
+            calib_loader = self._get_calibration_dataloader()
 
             # Quantize
             self._log("Quantizing model...")
@@ -1385,6 +1440,9 @@ class UnifiedQuantizer:
         Returns:
             QuantizationResult with details of the quantization
         """
+        # Resolve algorithm early to provide immediate feedback
+        self._resolve_algorithm()
+
         # Use file-to-file for MXFP precisions (produces vLLM-compatible packed uint8)
         # This path skips auto-strategy detection since it doesn't need the model in memory
         if self.config.precision.startswith("mxfp"):

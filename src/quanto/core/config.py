@@ -7,7 +7,7 @@ from the previous quantizer implementations.
 
 from __future__ import annotations
 
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from typing import Any, Literal
 
 
@@ -42,6 +42,7 @@ class UnifiedConfig:
         aggressive_exclusion: Use aggressive layer exclusion rules
         sensitivity_analysis: Enable sequential sensitivity analysis for layer exclusion
         sensitivity_threshold: Threshold for excluding sensitive layers
+        sensitivity_metric: Metric used to rank sensitive layers
         sensitivity_cache_on_gpu: Cache activations on GPU (faster, more memory)
         skip_evaluation: Skip perplexity evaluation
         trust_remote_code: Trust remote code when loading models
@@ -81,6 +82,7 @@ class UnifiedConfig:
     # Sensitivity-based exclusion
     sensitivity_analysis: bool = False  # Enable sequential sensitivity analysis
     sensitivity_threshold: float = 0.0  # Threshold for excluding sensitive layers (0 = disabled, typical values: 0.12-0.15 for INT4)
+    sensitivity_metric: str = "relative"  # One of: relative, mse, mae, cosine, kl
     sensitivity_cache_on_gpu: bool = True  # Cache activations on GPU (faster, uses more memory)
     max_iterations: int = 10  # Maximum iterations for iterative sensitivity analysis (1 = single-pass)
 
@@ -150,11 +152,29 @@ class UnifiedConfig:
         if self.max_iterations < 1:
             raise ValueError(f"max_iterations must be >= 1, got {self.max_iterations}")
 
-        # Validate algorithm
-        valid_algorithms = ["rtn", "awq", "gptq"]
+        # Validate sensitivity metric
+        valid_sensitivity_metrics = ["relative", "mse", "mae", "cosine", "kl"]
+        if self.sensitivity_metric not in valid_sensitivity_metrics:
+            raise ValueError(
+                f"Invalid sensitivity_metric '{self.sensitivity_metric}'. "
+                f"Must be one of: {valid_sensitivity_metrics}"
+            )
+
+        # Validate algorithm and precision combination
+        from ..constants import ALGORITHM_PRECISION_SUPPORT
+
+        valid_algorithms = list(ALGORITHM_PRECISION_SUPPORT.keys())
         if self.algorithm not in valid_algorithms:
             raise ValueError(
                 f"Invalid algorithm '{self.algorithm}'. Must be one of: {valid_algorithms}"
+            )
+
+        # Check if precision is supported for this algorithm
+        supported_precisions = ALGORITHM_PRECISION_SUPPORT[self.algorithm]
+        if self.precision not in supported_precisions:
+            raise ValueError(
+                f"Precision '{self.precision}' not supported for algorithm '{self.algorithm}'. "
+                f"Supported precisions: {supported_precisions}"
             )
 
     def to_dict(self) -> dict[str, Any]:
@@ -175,6 +195,7 @@ class UnifiedConfig:
             "aggressive_exclusion": self.aggressive_exclusion,
             "sensitivity_analysis": self.sensitivity_analysis,
             "sensitivity_threshold": self.sensitivity_threshold,
+            "sensitivity_metric": self.sensitivity_metric,
             "sensitivity_cache_on_gpu": self.sensitivity_cache_on_gpu,
             "max_iterations": self.max_iterations,
             "skip_evaluation": self.skip_evaluation,

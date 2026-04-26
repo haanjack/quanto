@@ -89,3 +89,11 @@ SUPPORTED_ALGORITHMS: list[str] = [
     "awq",
     "gptq",
 ]
+
+# Algorithm-Precision support matrix
+# Defines which precisions are supported for each quantization algorithm
+ALGORITHM_PRECISION_SUPPORT: dict[str, list[str]] = {
+    "rtn": ["int4", "int4_64", "int4_32", "int8", "fp8", "mxfp4", "mxfp6", "uint4"],
+    "awq": ["int4", "int4_64", "int4_32"],  # AWQ is INT4-only (activation-aware)
+    "gptq": ["int4"],  # GPTQ is INT4-only (Hessian-based)
+}

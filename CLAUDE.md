@@ -99,7 +99,12 @@ AMD Quark is vendored as a git submodule in `contribs/quark/`. Key Quark APIs us
 ## Key patterns
 
 - **vLLM fused layer alignment**: `_align_exclude_groups()` ensures q/k/v projections and gate/up projections are excluded together (vLLM fuses these into `qkv_proj` and `gate_up_proj`)
-- **AWQ/GPTQ**: Set `algorithm="awq"` or `"gptq"` in config — passed to `LLMTemplate.get_config(algorithm=...)`. Quark handles execution internally via `AwqProcessor`/`GptqProcessor`.
+- **AWQ/GPTQ algorithm support**: Enabled via config validation matrix in `constants.ALGORITHM_PRECISION_SUPPORT`. Valid combinations:
+  - RTN: all precisions (int4, int4_64, int4_32, int8, fp8, mxfp4, mxfp6, uint4)
+  - AWQ: INT4 only (int4, int4_64, int4_32) — activation-aware, Quark `AwqProcessor`
+  - GPTQ: INT4 only (int4) — Hessian-based, Quark `GptqProcessor`
+  - Invalid combos (e.g., AWQ+MXFP4, GPTQ+INT8) raise `ValueError` in `UnifiedConfig.validate()`
+- **Sensitivity analysis algorithm-awareness**: `SequentialSensitivityAnalyzer._build_quant_config_for_scoring()` passes actual algorithm (not RTN proxy) to `LLMTemplate.get_config()` for correct Quark spec (critical for AWQ/GPTQ accuracy)
 - **Backward compat aliases**: `QuantizationConfig = UnifiedConfig`, `AutoQuantizer = UnifiedQuantizer`
 - **HF hub resolution**: File2file path auto-resolves HF hub IDs to local cache via `snapshot_download`
 

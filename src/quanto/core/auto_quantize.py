@@ -75,14 +75,21 @@ def main() -> int:
 
     # Sensitivity analysis
     parser.add_argument("--sensitivity_analysis", action="store_true", help="Enable iterative sensitivity analysis")
-    parser.add_argument("--sensitivity_threshold", type=float, default=0.12, help="Sensitivity threshold for layer exclusion")
+    parser.add_argument("--sensitivity_threshold", type=float, default=0.0, help="Sensitivity threshold for layer exclusion")
+    parser.add_argument(
+        "--sensitivity_metric",
+        type=str,
+        default="relative",
+        choices=["relative", "mse", "mae", "cosine", "kl"],
+        help="Metric used to rank sensitive layers",
+    )
     parser.add_argument("--max_iterations", type=int, default=10, help="Max iterations for sensitivity analysis")
 
     # Layer exclusion
     parser.add_argument("--exclude_layers", nargs="*", help="Layer name patterns to exclude from quantization")
     parser.add_argument("--exclude_layers_file", help="JSON file containing exclude layer list")
 
-    # Calibration
+    # Calibration data
     parser.add_argument("--calibration_data", default="pileval", help="Calibration dataset name or path")
     parser.add_argument("--num_calib_samples", type=int, default=128, help="Number of calibration samples")
     parser.add_argument("--seq_len", type=int, default=512, help="Sequence length for calibration")
@@ -110,6 +117,7 @@ def main() -> int:
         memory_strategy=args.memory_strategy,
         sensitivity_analysis=args.sensitivity_analysis,
         sensitivity_threshold=args.sensitivity_threshold,
+        sensitivity_metric=args.sensitivity_metric,
         max_iterations=args.max_iterations,
         exclude_layers=exclude_layers,
         calibration_data=args.calibration_data,
