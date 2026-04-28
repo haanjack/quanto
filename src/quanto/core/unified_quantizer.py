@@ -794,46 +794,7 @@ class UnifiedQuantizer:
             self.tokenizer.save_pretrained(self.config.output_dir)
 
             # Add quantization_config to hf_config for Quark compatibility
-            quant_scheme = self._get_quant_scheme()
-            group_size = 128  # Default group size for INT4
-            if "128" in quant_scheme:
-                group_size = 128
-            elif "64" in quant_scheme:
-                group_size = 64
-
-            quantization_config = {
-                "quant_method": "quark",
-                "quant_mode": "eager_mode",
-                "global_quant_config": {
-                    "weight": {
-                        "dtype": "int4" if self.config.precision.startswith("int4") else "int8",
-                        "qscheme": "per_group",
-                        "group_size": group_size,
-                        "ch_axis": -1,
-                        "is_dynamic": False,
-                        "symmetric": True,
-                        "scale_type": "float",
-                        "is_scale_quant": False,
-                        "observer_cls": "PerGroupMinMaxObserver",
-                        "round_method": "half_even",
-                    },
-                    "input_tensors": None,
-                    "output_tensors": None,
-                    "bias": None,
-                },
-                "kv_cache_quant_config": {},
-                "layer_quant_config": {},
-                "layer_type_quant_config": {},
-                "exclude": exclude_layers,
-                "export": {
-                    "kv_cache_group": [],
-                    "min_kv_scale": 0.0,
-                    "pack_method": "reorder",
-                    "weight_format": "real_quantized",
-                    "weight_merge_groups": None,
-                },
-            }
-            self.hf_config.quantization_config = quantization_config
+            self._add_quantization_config(exclude_layers)
             self.hf_config.save_pretrained(self.config.output_dir)
 
             # Save quantization metadata
@@ -1073,6 +1034,9 @@ class UnifiedQuantizer:
             output_file = os.path.join(self.config.output_dir, "model.safetensors")
             save_file(quantized_state_dict, output_file)
 
+            # Add quantization_config to hf_config for Quark compatibility
+            self._add_quantization_config(exclude_layers)
+
             self.tokenizer.save_pretrained(self.config.output_dir)
             self.hf_config.save_pretrained(self.config.output_dir)
 
@@ -1082,6 +1046,7 @@ class UnifiedQuantizer:
             result.output_dir = self.config.output_dir
             result.model_type = self.model_type
             result.quant_scheme = self._get_quant_scheme()
+            result.precision = self.config.precision
             result.timing = self.timing
 
             self._print_summary(result)
@@ -1179,6 +1144,60 @@ class UnifiedQuantizer:
             traceback.print_exc()
 
         return result
+
+    def _add_quantization_config(self, exclude_layers: list[str] | None = None) -> None:
+        """Add quantization_config to hf_config for Quark/vLLM compatibility."""
+        quant_scheme = self._get_quant_scheme()
+        group_size = 64 if "64" in quant_scheme else 128
+
+        # Determine dtype for quantization config
+        precision = self.config.precision
+        if precision.startswith("int4"):
+            weight_dtype = "int4"
+        elif precision.startswith("int8"):
+            weight_dtype = "int8"
+        elif precision == "fp8":
+            weight_dtype = "fp8"
+        elif precision == "mxfp4":
+            weight_dtype = "mxfp4"
+        elif precision == "mxfp6":
+            weight_dtype = "mxfp6"
+        else:
+            weight_dtype = precision
+
+        quantization_config = {
+            "quant_method": "quark",
+            "quant_mode": "eager_mode",
+            "global_quant_config": {
+                "weight": {
+                    "dtype": weight_dtype,
+                    "qscheme": "per_group",
+                    "group_size": group_size,
+                    "ch_axis": -1,
+                    "is_dynamic": False,
+                    "symmetric": True,
+                    "scale_type": "float",
+                    "is_scale_quant": False,
+                    "observer_cls": "PerGroupMinMaxObserver",
+                    "round_method": "half_even",
+                },
+                "input_tensors": None,
+                "output_tensors": None,
+                "bias": None,
+            },
+            "kv_cache_quant_config": {},
+            "layer_quant_config": {},
+            "layer_type_quant_config": {},
+            "exclude": exclude_layers or [],
+            "export": {
+                "kv_cache_group": [],
+                "min_kv_scale": 0.0,
+                "pack_method": "reorder",
+                "weight_format": "real_quantized",
+                "weight_merge_groups": None,
+            },
+        }
+        self.hf_config.quantization_config = quantization_config
 
     def _print_summary(self, result: QuantizationResult) -> None:
         """Print quantization summary."""
