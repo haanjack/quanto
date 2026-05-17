@@ -60,6 +60,9 @@ rocm = [
     "scikit-learn>=1.4.0",
     "rich>=13.0.0",
 ]
+qat = [
+    "ray[tune]>=2.9.0",
+]
 dev = [
     "pytest>=8.0.0",
     "pytest-cov>=4.1.0",
