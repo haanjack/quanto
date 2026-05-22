@@ -1,0 +1,52 @@
+model:
+  model_path: /workspace/.cache/huggingface/hub/models--Qwen--Qwen3-8B/snapshots/b968826d9c46dd6066d109eabc6255188de91218
+  output_dir: /workspace/quanto/outputs/qwen3-8b-qat-search
+  trust_remote_code: true
+
+search_space:
+  learning_rate:
+    min: 1e-6
+    max: 5e-4
+    scale: log
+  num_train_epochs:
+    choices: [1, 2, 3, 5]
+  per_device_train_batch_size:
+    choices: [1]
+  gradient_accumulation_steps:
+    choices: [1, 2, 4, 8]
+  weight_decay:
+    min: 0.0
+    max: 0.1
+    scale: uniform
+  warmup_ratio:
+    choices: [0.0, 0.05, 0.1]
+  only_train_scaling_factor:
+    choices: [true]
+
+datasets:
+  train:
+    - name: wikitext
+      subset: wikitext-2-raw-v1
+      split: train
+      ratio: 1.0
+  eval:
+    name: wikitext
+    subset: wikitext-2-raw-v1
+    split: validation
+  seq_len: 512
+  max_train_samples: 512
+  max_eval_samples: 128
+
+target:
+  metric: perplexity
+  mode: min
+  threshold: 10.0
+  max_trials: 8
+
+tuner:
+  method: pbt
+  population_size: 5
+  exploit_interval: 1
+  perturbation_factor: 0.2
+  tracking:
+    backends: [tensorboard]
