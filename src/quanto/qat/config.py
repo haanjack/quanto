@@ -1,8 +1,8 @@
 """
 QAT Search Configuration.
 
-Parses a single YAML file into structured dataclasses for search space,
-datasets, target criteria, and Ray Tune passthrough settings.
+Parses a YAML file into structured dataclasses for search space,
+datasets, target criteria, and tuner settings.
 """
 
 from __future__ import annotations
@@ -55,6 +55,28 @@ class TargetConfig:
 
 
 @dataclass
+class TrackingConfig:
+    """Metric tracking backend configuration."""
+
+    backends: list[str] = field(default_factory=lambda: ["tensorboard"])
+    tensorboard_dir: str = ""
+    wandb_project: str = "qat-search"
+    wandb_entity: str = ""
+
+
+@dataclass
+class TunerConfig:
+    """Configuration for the PBT tuner."""
+
+    method: str = "pbt"
+    population_size: int = 5
+    exploit_interval: int = 1
+    perturbation_factor: float = 0.2
+    early_stopping_patience: int = 0
+    tracking: TrackingConfig = field(default_factory=TrackingConfig)
+
+
+@dataclass
 class QATSearchConfig:
     """Top-level configuration for QAT hyperparameter search."""
 
@@ -79,8 +101,8 @@ class QATSearchConfig:
     # Target
     target: TargetConfig = field(default_factory=TargetConfig)
 
-    # Ray Tune passthrough — raw dict from YAML
-    ray_config: dict[str, Any] = field(default_factory=dict)
+    # Tuner config (replaces ray_config)
+    tuner_config: TunerConfig = field(default_factory=TunerConfig)
 
     # Export
     export_weight_format: str = "real_quantized"
@@ -116,8 +138,8 @@ def _parse_search_space(raw: dict[str, Any]) -> dict[str, SearchSpaceDimension]:
             continue
         result[name] = SearchSpaceDimension(
             choices=dim_raw.get("choices"),
-            min=dim_raw.get("min"),
-            max=dim_raw.get("max"),
+            min=float(dim_raw["min"]) if "min" in dim_raw else None,
+            max=float(dim_raw["max"]) if "max" in dim_raw else None,
             scale=dim_raw.get("scale", "uniform"),
         )
     return result
@@ -140,6 +162,7 @@ def _parse_datasets(raw: dict[str, Any]) -> tuple[list[DatasetSpec], DatasetSpec
         train_specs.append(DatasetSpec(
             name=ds["name"],
             ratio=ds.get("ratio", 1.0),
+            subset=ds.get("subset"),
             split=ds.get("split", "train"),
             text_column=ds.get("text_column", "text"),
         ))
@@ -147,11 +170,31 @@ def _parse_datasets(raw: dict[str, Any]) -> tuple[list[DatasetSpec], DatasetSpec
     eval_raw = raw.get("eval", {})
     eval_spec = DatasetSpec(
         name=eval_raw.get("name", "wikitext"),
+        subset=eval_raw.get("subset"),
         split=eval_raw.get("split", "test"),
         text_column=eval_raw.get("text_column", "text"),
     )
 
     return train_specs, eval_spec
+
+
+def _parse_tuner(raw: dict[str, Any]) -> TunerConfig:
+    """Parse tuner section from YAML."""
+    tracking_raw = raw.get("tracking", {})
+    tracking = TrackingConfig(
+        backends=tracking_raw.get("backends", ["tensorboard"]),
+        tensorboard_dir=tracking_raw.get("tensorboard_dir", ""),
+        wandb_project=tracking_raw.get("wandb_project", "qat-search"),
+        wandb_entity=tracking_raw.get("wandb_entity", ""),
+    )
+    return TunerConfig(
+        method=raw.get("method", "pbt"),
+        population_size=raw.get("population_size", 5),
+        exploit_interval=raw.get("exploit_interval", 1),
+        perturbation_factor=raw.get("perturbation_factor", 0.2),
+        early_stopping_patience=raw.get("early_stopping_patience", 0),
+        tracking=tracking,
+    )
 
 
 def _parse_target(raw: dict[str, Any]) -> TargetConfig:
@@ -174,12 +217,13 @@ def load_search_config(path: str | Path) -> QATSearchConfig:
     space_raw = raw.get("search_space", {})
     datasets_raw = raw.get("datasets", {})
     target_raw = raw.get("target", {})
-    ray_raw = raw.get("ray", {})
+    tuner_raw = raw.get("tuner", {})
 
     search_space = _parse_search_space(space_raw)
     dataset_ratio_search = _parse_dataset_ratio_search(space_raw.get("dataset_ratios"))
     train_datasets, eval_dataset = _parse_datasets(datasets_raw)
     target = _parse_target(target_raw)
+    tuner_config = _parse_tuner(tuner_raw)
 
     return QATSearchConfig(
         model_path=model["model_path"],
@@ -193,6 +237,6 @@ def load_search_config(path: str | Path) -> QATSearchConfig:
         max_train_samples=datasets_raw.get("max_train_samples"),
         max_eval_samples=datasets_raw.get("max_eval_samples"),
         target=target,
-        ray_config=ray_raw,
+        tuner_config=tuner_config,
         export_weight_format=model.get("export_weight_format", "real_quantized"),
     )

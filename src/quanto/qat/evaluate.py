@@ -1,43 +1,66 @@
 """
 Evaluation utilities for QAT trials.
 
-Wraps Quark's ppl_eval for perplexity computation.
+Computes perplexity using sliding-window approach.
+Direct PyTorch implementation — avoids broken lm_eval compatibility in quark.contrib.
 """
 
 from __future__ import annotations
 
-import sys
-from pathlib import Path
-
 import torch
 from datasets import load_dataset
-
-sys.path.insert(0, str(Path(__file__).parent.parent / "quark"))
-
-from quark.contrib.llm_eval import ppl_eval
 
 
 def compute_perplexity(
     model,
     tokenizer,
-    device: str = "cuda",
+    dataset_name: str = "wikitext",
+    dataset_subset: str | None = "wikitext-2-raw-v1",
+    dataset_split: str = "test",
+    stride: int = 512,
 ) -> float:
     """
-    Compute perplexity on wikitext-2 test set.
+    Compute perplexity using sliding window.
 
     Args:
-        model: The model to evaluate (with fake or real quantization applied).
+        model: Model to evaluate.
         tokenizer: HuggingFace tokenizer.
-        device: Device string.
+        dataset_name: HuggingFace dataset name.
+        dataset_subset: Dataset subset (e.g. "wikitext-2-raw-v1").
+        dataset_split: Dataset split (e.g. "test", "validation").
+        stride: Sliding window stride.
 
     Returns:
         Perplexity score (float).
     """
     model.eval()
-    testdata = load_dataset("wikitext", "wikitext-2-raw-v1", split="test")
-    testenc = tokenizer("\n\n".join(testdata["text"]), return_tensors="pt")
+    if hasattr(model, "hf_device_map"):
+        first_device = next(iter(model.hf_device_map.values()))
+        device = torch.device(first_device)
+    else:
+        device = next(model.parameters()).device
+
+    testdata = load_dataset(dataset_name, dataset_subset, split=dataset_split)
+    test_text = "\n\n".join(testdata["text"])
+    testenc = tokenizer(test_text, return_tensors="pt")
+    test_ids = testenc.input_ids.to(device)
+
+    seq_len = test_ids.shape[1]
+    nlls = []
+    prev_end = 0
 
     with torch.no_grad():
-        ppl = ppl_eval(model, testenc, device)
+        for begin in range(0, seq_len, stride):
+            end = min(begin + stride, seq_len)
+            trg_len = end - prev_end
+            input_chunk = test_ids[:, begin:end]
+            target_chunk = input_chunk.clone()
+            target_chunk[:, :-trg_len] = -100
 
+            outputs = model(input_chunk, labels=target_chunk)
+            neg_log_likelihood = outputs.loss * trg_len
+            nlls.append(neg_log_likelihood)
+            prev_end = end
+
+    ppl = torch.exp(torch.stack(nlls).sum() / seq_len)
     return float(ppl)

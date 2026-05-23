@@ -1,9 +1,4 @@
-"""
-QAT fine-tuning with HuggingFace Trainer.
-
-Wraps HF Trainer with a Ray Tune reporting callback
-for per-epoch metric reporting during hyperparameter search.
-"""
+"""QAT fine-tuning with HuggingFace Trainer and metric bridging callbacks."""
 
 from __future__ import annotations
 
@@ -22,61 +17,133 @@ from quark.torch.quantization.tensor_quantize import FrozenScaledFakeQuantize
 logger = logging.getLogger(__name__)
 
 
-class RayReportCallback(TrainerCallback):
-    """Reports eval_loss to Ray Tune after each evaluation epoch."""
+def precompute_quantized_weights(model):
+    """Free BF16 weights by pre-computing quantized integers.
+
+    After freeze, each QuantLinear still holds the original BF16 weight (~16GB).
+    This function:
+    1. Computes quantized_int = round(weight / scale).clamp(quant_min, quant_max)
+    2. Stores quantized_int as an int8 buffer (halves memory)
+    3. Patches the quantizer forward to dequant from int8 * scale
+    4. Replaces the BF16 weight with a tiny dummy, freeing ~8GB GPU memory
+
+    The STE gradient to scale flows naturally through autograd's broadcasting.
+    """
+    from quark.torch.quantization.nn.modules.quantize_linear import QuantLinear
+
+    freed_bytes = 0
+    patched = 0
+
+    for name, mod in model.named_modules():
+        if not isinstance(mod, QuantLinear):
+            continue
+        if not hasattr(mod, "_weight_quantizer") or mod._weight_quantizer is None:
+            continue
+
+        wq = mod._weight_quantizer
+        if not isinstance(wq, FrozenScaledFakeQuantize):
+            continue
+
+        weight = mod.weight.data  # BF16 [out, in]
+        scale = wq.scale.data  # [out, num_groups]
+        group_size = wq.group_size
+        quant_min = wq.quant_min
+        quant_max = wq.quant_max
+        ch_axis = wq.ch_axis
+
+        # Compute quantized integers: round(W / S).clamp(min, max)
+        with torch.no_grad():
+            if group_size and group_size > 0 and weight.ndim == 2:
+                num_groups = weight.shape[1] // group_size
+                w_reshaped = weight.reshape(weight.shape[0], num_groups, group_size)
+                s_expanded = scale.reshape(weight.shape[0], num_groups, 1)
+                q_int = torch.round(w_reshaped / s_expanded).clamp(quant_min, quant_max)
+                q_int = q_int.reshape(weight.shape)
+            else:
+                q_int = torch.round(weight / scale).clamp(quant_min, quant_max)
+
+        # Store as int8 buffer
+        q_int = q_int.to(torch.int8)
+        freed_bytes += weight.numel() * (weight.element_size() - q_int.element_size())
+
+        wq.register_buffer("quantized_int", q_int)
+        wq.group_size_stored = group_size
+        wq.orig_out_features = weight.shape[0]
+        wq.orig_in_features = weight.shape[1]
+
+        # Patch forward: dequant from int8 * scale (standard autograd handles grad)
+        wq.forward = lambda X, _self=wq: _dequant_forward(_self, X)
+        wq.frozen_params = False
+
+        # Make scale trainable
+        scale_val = wq.scale
+        delattr(wq, "scale")
+        wq.scale = nn.Parameter(scale_val, requires_grad=True)
+
+        # Replace BF16 weight with tiny dummy to free memory
+        freed_bytes += weight.numel() * weight.element_size()
+        mod.weight = nn.Parameter(
+            torch.empty(1, 1, device=weight.device, dtype=weight.dtype),
+            requires_grad=False,
+        )
+        patched += 1
+
+    torch.cuda.empty_cache()
+    freed_gb = freed_bytes / 1e9
+    logger.info(f"Pre-computed quantized weights for {patched} layers, freed {freed_gb:.2f}GB")
+    return freed_gb
+
+
+def _dequant_forward(self, X):
+    """Dequantize from pre-computed int8 * scale. Gradient flows to scale via autograd."""
+    qi = self.quantized_int.to(self.scale.dtype)
+    if self.group_size_stored and self.group_size_stored > 0 and qi.ndim == 2:
+        num_groups = qi.shape[1] // self.group_size_stored
+        qi = qi.reshape(qi.shape[0], num_groups, self.group_size_stored)
+        scale_exp = self.scale.reshape(qi.shape[0], num_groups, 1)
+        result = qi * scale_exp
+        return result.reshape(self.orig_out_features, self.orig_in_features)
+    return qi * self.scale
+
+
+
+class MetricBridgeCallback(TrainerCallback):
+    """Bridges HF Trainer eval metrics to the generic MetricCallback interface."""
+
+    def __init__(self, metric_callback):
+        self.metric_callback = metric_callback
 
     def on_evaluate(self, args, state, control, metrics=None, **kwargs):
-        try:
-            import ray.tune
-
-            if metrics and "eval_loss" in metrics:
-                ray.tune.report(eval_loss=metrics["eval_loss"])
-        except ImportError:
-            pass
+        if metrics:
+            filtered = {k: v for k, v in metrics.items() if isinstance(v, (int, float))}
+            self.metric_callback.report(filtered, step=state.global_step)
 
 
-def set_scaling_factor_trainable(model):
+class QATSaveCallback(TrainerCallback):
     """
-    EfficientQAT Stage 2: freeze all parameters except scaling factors.
+    Callback to handle model saving for QAT models.
 
-    Converts FrozenScaledFakeQuantize.scale from buffer to nn.Parameter.
-    Only works for INT4 (FrozenScaledFakeQuantize). MXFP4 is skipped.
+    Disables Trainer's default checkpointing (which calls state_dict/load,
+    breaking on FrozenScaledFakeQuantize's resize_) and instead saves
+    only the scale parameters manually.
     """
-    for name, parameter in model.named_parameters():
-        parameter.requires_grad_(False)
 
-    # Enable input gradient flow for embeddings
-    if hasattr(model, "enable_input_require_grads"):
-        model.enable_input_require_grads()
-    else:
+    def on_save(self, args, state, control, model=None, **kwargs):
+        if model is None:
+            return
+        # Save only scale parameters
+        checkpoint_dir = f"{args.output_dir}/checkpoint-{state.global_step}"
+        import os
+        os.makedirs(checkpoint_dir, exist_ok=True)
 
-        def make_inputs_require_grad(module, input, output):
-            output.requires_grad_(True)
+        scale_state = {}
+        for name, param in model.named_parameters():
+            if param.requires_grad:
+                scale_state[name] = param.data.cpu()
 
-        model.get_input_embeddings().register_forward_hook(make_inputs_require_grad)
-
-    # Convert scale buffers to trainable parameters
-    for name, module in model.named_modules():
-        if isinstance(module, FrozenScaledFakeQuantize):
-            _convert_scale_to_parameter(model, name, module)
-
-    trainable_count = sum(1 for p in model.parameters() if p.requires_grad)
-    logger.info(f"Trainable parameters after set_scaling_factor_trainable: {trainable_count}")
-
-
-def _convert_scale_to_parameter(model, module_name: str, module: FrozenScaledFakeQuantize):
-    """Convert a FrozenScaledFakeQuantize's scale buffer to a trainable parameter."""
-    parts = module_name.split(".")
-    parent = model
-    for part in parts[:-1]:
-        parent = getattr(parent, part)
-
-    attr_name = parts[-1]
-    submodule = getattr(parent, attr_name)
-
-    scale_value = submodule.scale
-    delattr(submodule, "scale")
-    submodule.scale = nn.Parameter(scale_value, requires_grad=True)
+        save_path = os.path.join(checkpoint_dir, "scales.pt")
+        torch.save(scale_state, save_path)
+        logger.info(f"Saved {len(scale_state)} trainable parameters to {save_path}")
 
 
 def train_qat(
@@ -87,12 +154,14 @@ def train_qat(
     learning_rate: float = 2e-5,
     num_epochs: int = 3,
     per_device_batch_size: int = 2,
+    gradient_accumulation_steps: int = 1,
     weight_decay: float = 0.0,
     warmup_ratio: float = 0.0,
     gradient_checkpointing: bool = True,
     output_dir: str = "./qat_trial",
     only_train_scaling_factor: bool = False,
     precision: str = "int4",
+    metric_callback=None,
 ):
     """
     Run QAT fine-tuning with HuggingFace Trainer.
@@ -116,33 +185,54 @@ def train_qat(
         Trainer instance after training.
     """
     if only_train_scaling_factor and precision == "int4":
-        set_scaling_factor_trainable(model)
+        print(f"[QAT] Before precompute: {torch.cuda.memory_allocated()/1e9:.2f}GB", flush=True)
+        freed = precompute_quantized_weights(model)
+        print(f"[QAT] After precompute: {torch.cuda.memory_allocated()/1e9:.2f}GB (freed={freed:.2f}GB)", flush=True)
+        # Freeze all params except quantization scales created by precompute
+        for name, p in model.named_parameters():
+            if "scale" not in name:
+                p.requires_grad_(False)
+        if hasattr(model, "enable_input_require_grads"):
+            model.enable_input_require_grads()
+        trainable = sum(1 for p in model.parameters() if p.requires_grad)
+        print(f"[QAT] {trainable} trainable params", flush=True)
 
-    callbacks = [RayReportCallback()]
+    callbacks = []
+    if metric_callback is not None:
+        callbacks.append(MetricBridgeCallback(metric_callback))
+
+    # Use save_strategy="no" to avoid the FrozenScaledFakeQuantize._load_from_state_dict
+    # crash when scale is an nn.Parameter (cannot resize variables that require_grad).
+    # Instead, we use QATSaveCallback to save only the trainable scale parameters.
+    callbacks.append(QATSaveCallback())
 
     training_args = TrainingArguments(
         output_dir=output_dir,
         num_train_epochs=num_epochs,
         per_device_train_batch_size=per_device_batch_size,
+        gradient_accumulation_steps=gradient_accumulation_steps,
         learning_rate=learning_rate,
         weight_decay=weight_decay,
         warmup_ratio=warmup_ratio,
         bf16=True,
         eval_strategy="epoch",
-        save_strategy="epoch",
+        save_strategy="no",
         save_total_limit=1,
-        load_best_model_at_end=True,
+        load_best_model_at_end=False,
         metric_for_best_model="eval_loss",
         logging_strategy="epoch",
         report_to="none",
         gradient_checkpointing=gradient_checkpointing,
+        gradient_checkpointing_kwargs={"use_reentrant": False},
         dataloader_drop_last=True,
         remove_unused_columns=False,
+        dataloader_num_workers=0,
+        torch_compile=False,
     )
 
     trainer = Trainer(
         model=model,
-        tokenizer=tokenizer,
+        processing_class=tokenizer,
         args=training_args,
         train_dataset=train_dataset,
         eval_dataset=eval_dataset,
