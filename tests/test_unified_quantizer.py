@@ -21,6 +21,7 @@ import pytest
 sys.path.insert(0, str(Path(__file__).parent.parent / "src"))
 
 from quanto import UnifiedConfig, UnifiedQuantizer
+from quanto.core.sensitivity.scorer import SensitivityMetric
 
 
 class TestUnifiedConfig:
@@ -39,6 +40,7 @@ class TestUnifiedConfig:
         assert config.calibration_data == "pileval"
         assert config.num_calib_samples == 128
         assert config.device == "cuda"
+        assert config.sensitivity_metric == "relative"
 
     def test_custom_config(self):
         """Test custom configuration values."""
@@ -99,6 +101,27 @@ class TestUnifiedConfig:
         assert d["output_dir"] == "/tmp/output"
         assert d["precision"] == "int4"
         assert d["memory_strategy"] == "auto"
+        assert d["sensitivity_metric"] == "relative"
+
+    def test_invalid_sensitivity_metric(self):
+        """Test that invalid sensitivity metric raises error."""
+        with pytest.raises(ValueError, match="Invalid sensitivity_metric"):
+            UnifiedConfig(
+                model_path="/tmp/model",
+                output_dir="/tmp/output",
+                sensitivity_metric="invalid",
+            )
+
+    def test_sensitivity_metric_mapping(self):
+        """Test sensitivity metric mapping to enum values."""
+        config = UnifiedConfig(
+            model_path="/tmp/model",
+            output_dir="/tmp/output",
+            sensitivity_metric="mse",
+        )
+        quantizer = UnifiedQuantizer(config)
+
+        assert quantizer._resolve_sensitivity_metric() == SensitivityMetric.MSE
 
     def test_from_dict(self):
         """Test config deserialization."""
@@ -111,6 +134,58 @@ class TestUnifiedConfig:
 
         assert config.model_path == "/tmp/model"
         assert config.precision == "fp8"
+
+    def test_algorithm_precision_validation(self):
+        """Test that algorithm-precision combinations are validated."""
+        # AWQ only supports INT4 precisions
+        with pytest.raises(ValueError, match="Precision.*not supported.*algorithm"):
+            UnifiedConfig(
+                model_path="/tmp/model",
+                output_dir="/tmp/output",
+                algorithm="awq",
+                precision="mxfp4",  # MXFP4 not supported for AWQ
+            )
+
+        # GPTQ only supports INT4
+        with pytest.raises(ValueError, match="Precision.*not supported.*algorithm"):
+            UnifiedConfig(
+                model_path="/tmp/model",
+                output_dir="/tmp/output",
+                algorithm="gptq",
+                precision="int8",  # INT8 not supported for GPTQ
+            )
+
+    def test_algorithm_precision_supported(self):
+        """Test that valid algorithm-precision combinations are accepted."""
+        # AWQ + INT4 should be valid
+        config = UnifiedConfig(
+            model_path="/tmp/model",
+            output_dir="/tmp/output",
+            algorithm="awq",
+            precision="int4",
+        )
+        assert config.algorithm == "awq"
+        assert config.precision == "int4"
+
+        # GPTQ + INT4 should be valid
+        config = UnifiedConfig(
+            model_path="/tmp/model",
+            output_dir="/tmp/output",
+            algorithm="gptq",
+            precision="int4",
+        )
+        assert config.algorithm == "gptq"
+        assert config.precision == "int4"
+
+        # RTN + MXFP4 should be valid
+        config = UnifiedConfig(
+            model_path="/tmp/model",
+            output_dir="/tmp/output",
+            algorithm="rtn",
+            precision="mxfp4",
+        )
+        assert config.algorithm == "rtn"
+        assert config.precision == "mxfp4"
 
 
 class TestAutoDetectStrategy:

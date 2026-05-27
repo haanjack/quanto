@@ -42,8 +42,6 @@ def main() -> int:
         # Run dequantization
         from quanto.core.dequantize import main as dequant_main
 
-        # Add back --dequantize flag since dequantize module expects it
-        sys.argv = [sys.argv[0], "--dequantize"] + remaining
         return dequant_main()
     elif args.qat_search:
         # Run QAT hyperparameter search

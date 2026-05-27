@@ -1,3 +1,12 @@
 [submodule "contribs/quark"]
 	path = contribs/quark
 	url = https://github.com/amd/Quark.git
+[submodule "contribs/llm-compressor"]
+	path = contribs/llm-compressor
+	url = https://github.com/vllm-project/llm-compressor.git
+[submodule "contribs/transformers"]
+	path = contribs/transformers
+	url = https://github.com/huggingface/transformers.git
+[submodule "contribs/vllm"]
+	path = contribs/vllm
+	url = https://github.com/vllm-project/vllm.git

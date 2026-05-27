@@ -46,6 +46,13 @@ MODEL_TYPE_MAPPINGS: dict[str, str] = {
     "phi": "phi",
     "phi3": "phi3",
     "phi4": "phi3",
+    "solar_open": "qwen3_moe",
+    "exaone": "llama",
+    "exaone4_5": "llama",
+    "exaone4_5_text": "llama",
+    "exaone_moe": "qwen3_moe",
+    "kimi_k2": "kimi_k25",
+    "kimi_k25": "kimi_k25",
 }
 
 # Default layers to exclude from quantization
@@ -78,7 +85,15 @@ SUPPORTED_PRECISIONS: list[str] = [
 
 # Supported quantization algorithms
 SUPPORTED_ALGORITHMS: list[str] = [
+    "rtn",
     "awq",
     "gptq",
-    "smoothquant",
 ]
+
+# Algorithm-Precision support matrix
+# Defines which precisions are supported for each quantization algorithm
+ALGORITHM_PRECISION_SUPPORT: dict[str, list[str]] = {
+    "rtn": ["int4", "int4_64", "int4_32", "int8", "fp8", "mxfp4", "mxfp6", "uint4"],
+    "awq": ["int4", "int4_64", "int4_32"],  # AWQ is INT4-only (activation-aware)
+    "gptq": ["int4"],  # GPTQ is INT4-only (Hessian-based)
+}

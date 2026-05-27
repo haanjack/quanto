@@ -43,6 +43,7 @@ from ..utils import (
 from .base_quantizer import QuantizationResult
 from .config import UnifiedConfig
 from .sensitivity import SequentialSensitivityAnalyzer
+from .sensitivity.scorer import SensitivityMetric
 
 
 class UnifiedQuantizer:
@@ -78,6 +79,8 @@ class UnifiedQuantizer:
         self.safetensors_files = []
         self.weight_index = {}  # Maps weight name to file path
         self.timing = {}
+        self._resolved_algorithm: str | None = None
+        self._calibration_loader_cache = None
 
     def _log(self, message: str) -> None:
         """Print log message with timestamp."""
@@ -111,24 +114,89 @@ class UnifiedQuantizer:
             self._log(f"Warning: No template found for model type '{self.model_type}'")
         return self.template
 
+    def _resolve_algorithm(self) -> str | None:
+        """Resolve the requested quantization algorithm to pass to Quark.
+
+        Returns:
+            None for RTN (Quark default), algorithm name for AWQ/GPTQ
+        """
+        if self._resolved_algorithm is not None:
+            return self._resolved_algorithm
+
+        algorithm = (self.config.algorithm or "rtn").lower()
+        if algorithm == "rtn":
+            self._resolved_algorithm = None
+            return None
+
+        # AWQ and GPTQ are now supported via Quark's LLMTemplate
+        if algorithm in {"awq", "gptq"}:
+            self._resolved_algorithm = algorithm
+            return algorithm
+
+        raise ValueError(f"Unsupported quantization algorithm: '{self.config.algorithm}'")
+
+    def _resolve_sensitivity_metric(self) -> SensitivityMetric:
+        """Resolve configured sensitivity metric string to enum value."""
+        metric_name = (self.config.sensitivity_metric or "relative").lower()
+        mapping = {
+            "relative": SensitivityMetric.RELATIVE_NORM,
+            "mse": SensitivityMetric.MSE,
+            "mae": SensitivityMetric.MAE,
+            "cosine": SensitivityMetric.COSINE,
+            "kl": SensitivityMetric.KL_DIVERGENCE,
+        }
+        try:
+            return mapping[metric_name]
+        except KeyError as exc:
+            valid = ", ".join(mapping.keys())
+            raise ValueError(
+                f"Invalid sensitivity_metric '{self.config.sensitivity_metric}'. "
+                f"Must be one of: {valid}"
+            ) from exc
+
+    def _get_calibration_dataloader(self):
+        """Load and cache the calibration dataloader."""
+        if self._calibration_loader_cache is None:
+            if self.tokenizer is None:
+                raise RuntimeError("Tokenizer must be initialized before loading calibration data")
+            self._calibration_loader_cache = get_calib_dataloader(
+                dataset_name_or_path=self.config.calibration_data,
+                tokenizer=self.tokenizer,
+                batch_size=self.config.batch_size,
+                num_calib_data=self.config.num_calib_samples,
+                seqlen=self.config.seq_len,
+                device=self.config.device,
+            )
+        return self._calibration_loader_cache
+
     def _setup(self) -> None:
         """Load config, tokenizer, and build weight index."""
         start_time = time.time()
         self._log("Setting up quantization...")
 
         # Load HuggingFace config (no weights)
-        self.hf_config = AutoConfig.from_pretrained(
-            self.config.model_path, trust_remote_code=self.config.trust_remote_code
-        )
+        try:
+            self.hf_config = AutoConfig.from_pretrained(
+                self.config.model_path, trust_remote_code=self.config.trust_remote_code
+            )
+        except (ValueError, KeyError) as e:
+            # Fallback for models not yet supported by transformers (e.g., exaone4_5)
+            self._log(f"AutoConfig failed ({e.__class__.__name__}), using JSON fallback")
+            self.hf_config = self._load_config_from_json()
+
         self._detect_model_type()
         self._get_template()
 
         # Load tokenizer
-        self.tokenizer = AutoTokenizer.from_pretrained(
-            self.config.model_path, trust_remote_code=self.config.trust_remote_code
-        )
-        if self.tokenizer.pad_token is None:
-            self.tokenizer.pad_token = self.tokenizer.eos_token
+        try:
+            self.tokenizer = AutoTokenizer.from_pretrained(
+                self.config.model_path, trust_remote_code=self.config.trust_remote_code
+            )
+            if self.tokenizer.pad_token is None:
+                self.tokenizer.pad_token = self.tokenizer.eos_token
+        except (ValueError, KeyError, OSError) as e:
+            self._log(f"AutoTokenizer failed ({e.__class__.__name__}), skipping tokenizer")
+            self.tokenizer = None
 
         # Create output directory
         os.makedirs(self.config.output_dir, exist_ok=True)
@@ -136,6 +204,29 @@ class UnifiedQuantizer:
 
         self.timing["setup"] = time.time() - start_time
         self._log(f"Setup completed in {self.timing['setup']:.2f}s")
+
+    def _load_config_from_json(self):
+        """Fallback config loading when AutoConfig fails (unsupported model types)."""
+        from pathlib import Path
+        from types import SimpleNamespace
+
+        model_path = Path(self.config.model_path)
+        config_file = model_path / "config.json"
+
+        # If model_path is a HF hub ID, resolve to local cache
+        if not config_file.exists():
+            from huggingface_hub import hf_hub_download
+
+            config_file = Path(hf_hub_download(self.config.model_path, "config.json"))
+
+        with open(config_file) as f:
+            config_dict = json.load(f)
+
+        # For multimodal models, text_config holds the LLM settings
+        text_config = config_dict.get("text_config", {})
+        merged = {**config_dict, **text_config}
+
+        return SimpleNamespace(**merged)
 
     def _get_layer_info(self) -> dict[str, Any]:
         """Get layer information from config."""
@@ -199,6 +290,9 @@ class UnifiedQuantizer:
         # Add standard patterns
         exclude.extend(["*embed*", "*norm*"])
 
+        # Exclude MoE router gates (not gate_proj FFN layers)
+        exclude.append("*.gate")
+
         if self.config.aggressive_exclusion:
             exclude.extend(["*gate*"])
 
@@ -214,6 +308,55 @@ class UnifiedQuantizer:
             exclude.extend(sensitive_layers)
 
         # Remove duplicates
+        exclude = list(set(exclude))
+
+        # Align exclusions for vLLM fused layer compatibility
+        exclude = self._align_exclude_groups(exclude)
+
+        return exclude
+
+    def _align_exclude_groups(self, exclude: list[str]) -> list[str]:
+        """
+        Ensure fused projection groups are excluded together for vLLM compatibility.
+
+        vLLM fuses certain projections into single linear layers:
+        - qkv_proj: q_proj + k_proj + v_proj (must all share same scheme)
+        - gate_up_proj: gate_proj + up_proj (must all share same scheme)
+
+        If any projection in a group is excluded, exclude the entire group.
+        """
+        # Define fused groups: suffixes that must be excluded together
+        fused_groups = [
+            ["self_attn.q_proj", "self_attn.k_proj", "self_attn.v_proj"],
+            ["mlp.gate_proj", "mlp.up_proj"],
+            ["mlp.shared_experts.gate_proj", "mlp.shared_experts.up_proj"],
+        ]
+
+        # Find layer prefixes from exclude list (e.g., "model.layers.0")
+        added = set()
+        for layer_name in list(exclude):
+            # Skip glob patterns
+            if "*" in layer_name:
+                continue
+
+            for group in fused_groups:
+                # Check if this excluded layer belongs to a fused group
+                for suffix in group:
+                    if layer_name.endswith(suffix):
+                        # Extract the prefix (e.g., "model.layers.0")
+                        prefix = layer_name[: -len(suffix)]
+                        # Add all members of this group
+                        for member_suffix in group:
+                            member = prefix + member_suffix
+                            if member not in exclude and member not in added:
+                                added.add(member)
+                                self._log(f"  + {member} (aligned with {layer_name})")
+                        break
+
+        if added:
+            self._log(f"Aligned {len(added)} additional layers for vLLM fused layer compatibility")
+
+        exclude.extend(added)
         return list(set(exclude))
 
     def _analyze_sensitive_layers(self) -> list[str]:
@@ -261,7 +404,9 @@ class UnifiedQuantizer:
 
         analyzer = SequentialSensitivityAnalyzer(
             config=self.config,
+            metric=self._resolve_sensitivity_metric(),
             cache_on_gpu=self.config.sensitivity_cache_on_gpu,
+            template=self.template,
         )
 
         result = analyzer.analyze()
@@ -330,8 +475,10 @@ class UnifiedQuantizer:
             # Create analyzer with current exclusion list
             analyzer = SequentialSensitivityAnalyzer(
                 config=self.config,
+                metric=self._resolve_sensitivity_metric(),
                 cache_on_gpu=cache_on_gpu,
                 initial_exclude_layers=all_excluded,
+                template=self.template,
             )
 
             # Run analysis
@@ -447,16 +594,24 @@ class UnifiedQuantizer:
         quant_scheme = self._get_quant_scheme()
         self._log(f"Using quantization scheme: {quant_scheme}")
 
+        # Determine algorithm (None for RTN, raise for unsupported)
+        algorithm = self._resolve_algorithm()
+        if algorithm:
+            self._log(f"Using quantization algorithm: {algorithm}")
+        else:
+            self._log("Using quantization algorithm: rtn")
+
         # Create base quant config
         if self.template:
             quant_config = self.template.get_config(
                 scheme=quant_scheme,
+                algorithm=algorithm,
                 exclude_layers=exclude_layers,
             )
         else:
             quant_config = QConfig(
                 global_quant_config=QLayerConfig(
-                    weight=Int4PerGroupSpec(group_size=128).to_quantization_spec()
+                    weight=Int4PerGroupSpec(group_size=128, ch_axis=0).to_quantization_spec()
                 ),
                 exclude=exclude_layers,
             )
@@ -820,6 +975,7 @@ class UnifiedQuantizer:
             self._log("\n=== Assembling HuggingFace format ===")
             self._assemble_hf_format()
 
+
             self.timing["total"] = time.time() - total_start
 
             result.success = True
@@ -1097,14 +1253,7 @@ class UnifiedQuantizer:
 
             # Get calibration data
             self._log("Loading calibration data...")
-            calib_loader = get_calib_dataloader(
-                dataset_name_or_path=self.config.calibration_data,
-                tokenizer=self.tokenizer,
-                batch_size=self.config.batch_size,
-                num_calib_data=self.config.num_calib_samples,
-                seqlen=self.config.seq_len,
-                device=self.config.device,
-            )
+            calib_loader = self._get_calibration_dataloader()
 
             # Quantize
             self._log("Quantizing model...")
@@ -1129,6 +1278,88 @@ class UnifiedQuantizer:
                 )
 
             self.tokenizer.save_pretrained(self.config.output_dir)
+
+
+            self.timing["total"] = time.time() - total_start
+
+            result.success = True
+            result.output_dir = self.config.output_dir
+            result.model_type = self.model_type
+            result.quant_scheme = self._get_quant_scheme()
+            result.precision = self.config.precision
+            result.timing = self.timing
+
+            self._print_summary(result)
+
+        except Exception as e:
+            result.success = False
+            result.error_message = str(e)
+            self._log(f"Error during quantization: {e}")
+            import traceback
+            traceback.print_exc()
+
+        return result
+
+    def _run_file2file_quantization(self) -> QuantizationResult:
+        """
+        Run file-to-file quantization using Quark's quantize_model_per_safetensor.
+
+        Processes each safetensors shard independently without loading the full model
+        into memory. Produces properly packed uint8 weights with E8M0 scales that
+        vLLM can load natively as a Quark-quantized checkpoint.
+
+        This is the recommended path for MXFP4/MXFP6 quantization, matching how AMD
+        publishes official MXFP4 models (e.g., Kimi-K2.5-MXFP4).
+        """
+        from quark.torch.quantization.file2file_quantization import quantize_model_per_safetensor
+
+        total_start = time.time()
+        result = QuantizationResult(success=False)
+
+        try:
+            # Setup (load config, detect model type, get template)
+            self._setup()
+
+            # Determine exclusions (including sensitivity analysis if enabled)
+            exclude_layers = self._determine_exclude_layers()
+            result.exclude_layers_used = exclude_layers
+            self._log(f"Exclude layers: {exclude_layers}")
+
+            # Create quantization config
+            quant_config = self._create_quant_config(exclude_layers)
+
+            self._log(f"\n{'=' * 60}")
+            self._log("FILE-TO-FILE QUANTIZATION")
+            self._log(f"{'=' * 60}")
+            self._log(f"Model: {self.config.model_path}")
+            self._log(f"Output: {self.config.output_dir}")
+            self._log(f"Precision: {self.config.precision}")
+            self._log(f"Device: {self.config.device}")
+            self._log(f"{'=' * 60}")
+
+            # Resolve model path to local directory
+            # file2file requires a local path with safetensors files, not a HF hub ID
+            model_path = self.config.model_path
+            if not os.path.isdir(model_path):
+                from huggingface_hub import snapshot_download
+
+                self._log(f"Downloading model from HuggingFace: {model_path}")
+                model_path = snapshot_download(model_path)
+                self._log(f"Model downloaded to: {model_path}")
+
+            # Run file-to-file quantization
+            self._log("Running file-to-file quantization...")
+            quant_start = time.time()
+
+            quantize_model_per_safetensor(
+                pretrained_model_path=model_path,
+                quant_config=quant_config,
+                save_path=self.config.output_dir,
+                device=self.config.device,
+            )
+
+            self.timing["quantization"] = time.time() - quant_start
+            self._log(f"File-to-file quantization completed in {self.timing['quantization']:.2f}s")
 
             self.timing["total"] = time.time() - total_start
 
@@ -1234,18 +1465,27 @@ class UnifiedQuantizer:
         Returns:
             QuantizationResult with details of the quantization
         """
-        # Determine strategy
+        # Resolve algorithm early to provide immediate feedback
+        self._resolve_algorithm()
+
+        # Use file-to-file for MXFP precisions (produces vLLM-compatible packed uint8)
+        # This path skips auto-strategy detection since it doesn't need the model in memory
+        if self.config.precision.startswith("mxfp"):
+            return self._run_file2file_quantization()
+
+        # Determine memory strategy for non-MXFP precisions
         if self.config.memory_strategy == "auto":
-            # Need to load config first for auto-detection
-            self.hf_config = AutoConfig.from_pretrained(
-                self.config.model_path, trust_remote_code=self.config.trust_remote_code
-            )
+            try:
+                self.hf_config = AutoConfig.from_pretrained(
+                    self.config.model_path, trust_remote_code=self.config.trust_remote_code
+                )
+            except (ValueError, KeyError):
+                self.hf_config = self._load_config_from_json()
             strategy = self._auto_detect_strategy()
             self._log(f"Auto-detected memory strategy: {strategy}")
         else:
             strategy = self.config.memory_strategy
 
-        # Dispatch to appropriate strategy
         if strategy == "lazy":
             return self._run_lazy_quantization()
         elif strategy == "layerwise_cpu":
