@@ -1,0 +1,67 @@
+# QAT Hyperparameter Search Example Configuration
+# Usage: python -m quanto --qat-search --config qat_search_example.yaml
+
+model:
+  model_path: "Qwen/Qwen3-8B"
+  output_dir: "./outputs/qwen3-8b-qat-search"
+  trust_remote_code: true
+
+# Search space: parameters to explore
+search_space:
+  precision:
+    choices: ["int4", "mxfp4"]
+  group_size:
+    choices: [128, 64]
+  symmetric:
+    choices: [true, false]
+  learning_rate:
+    min: 1.0e-5
+    max: 5.0e-4
+    scale: "log"
+  num_train_epochs:
+    choices: [1, 2, 3]
+  per_device_train_batch_size:
+    choices: [1, 2]
+  only_train_scaling_factor:
+    choices: [true, false]
+  calibration_dataset:
+    choices: ["wikitext", "pileval"]
+  num_calib_samples:
+    choices: [128, 256]
+
+# Dataset mixing
+datasets:
+  train:
+    - name: "wikitext"
+      ratio: 0.5
+    - name: "HuggingFaceH4/ultrachat_200k"
+      ratio: 0.3
+    - name: "pileval"
+      ratio: 0.2
+  eval:
+    name: "wikitext"
+  seq_len: 512
+  max_train_samples: null
+
+# Target: stop when perplexity <= threshold
+target:
+  metric: "perplexity"
+  mode: "min"
+  threshold: 8.0
+  max_trials: 20
+  max_total_time_seconds: 86400
+
+# Ray Tune passthrough — configure per Ray documentation
+ray:
+  scheduler:
+    type: "ASHAScheduler"
+    max_t: 3
+    grace_period: 1
+    reduction_factor: 2
+  search_alg:
+    type: "OptunaSearch"
+  resources:
+    per_trial_gpu: 1
+    per_trial_cpu: 8
+  storage: "file:///tmp/ray_results"
+  name: "qat-search"

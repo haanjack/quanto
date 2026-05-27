@@ -16,6 +16,7 @@ import torch
 
 class CacheLocation(Enum):
     """Storage location for cached activations."""
+
     GPU = "gpu"
     CPU = "cpu"
 
@@ -23,6 +24,7 @@ class CacheLocation(Enum):
 @dataclass
 class CacheStats:
     """Statistics for the activation cache."""
+
     num_entries: int = 0
     gpu_memory_bytes: int = 0
     cpu_memory_bytes: int = 0
@@ -31,16 +33,17 @@ class CacheStats:
 
     @property
     def gpu_memory_gb(self) -> float:
-        return self.gpu_memory_bytes / (1024 ** 3)
+        return self.gpu_memory_bytes / (1024**3)
 
     @property
     def cpu_memory_gb(self) -> float:
-        return self.cpu_memory_bytes / (1024 ** 3)
+        return self.cpu_memory_bytes / (1024**3)
 
 
 @dataclass
 class CachedActivation:
     """A single cached activation tensor."""
+
     tensor: torch.Tensor
     layer_idx: int
     location: CacheLocation
@@ -239,10 +242,7 @@ class ActivationCache:
         Returns:
             Number of entries removed
         """
-        keys_to_remove = [
-            k for k in self._cache.keys()
-            if k[0] == layer_idx
-        ]
+        keys_to_remove = [k for k in self._cache if k[0] == layer_idx]
 
         for key in keys_to_remove:
             self.remove(key[0], key[1])

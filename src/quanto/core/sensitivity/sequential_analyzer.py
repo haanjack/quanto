@@ -9,7 +9,7 @@ from __future__ import annotations
 
 import gc
 import time
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from typing import TYPE_CHECKING
 
 import torch
@@ -17,6 +17,7 @@ import torch.nn as nn
 from tqdm import tqdm
 
 from quanto.utils import clear_gpu_memory
+
 from .activation_cache import ActivationCache, CacheLocation
 from .scorer import SensitivityMetric, SensitivityScorer
 
@@ -27,6 +28,7 @@ if TYPE_CHECKING:
 @dataclass
 class AnalysisResult:
     """Result of sensitivity analysis."""
+
     success: bool
     sensitive_layers: dict[str, float]  # layer_name -> score
     excluded_layers: list[str]  # layers to exclude from quantization
@@ -158,7 +160,7 @@ class SequentialSensitivityAnalyzer:
 
         # Find all quantizable linear layers (not just transformer decoder layers)
         self.layer_names = []
-        exclude_patterns = ['embed', 'norm', 'lm_head']  # Skip embedding and norm layers
+        exclude_patterns = ["embed", "norm", "lm_head"]  # Skip embedding and norm layers
 
         for name, module in model.named_modules():
             # Only include Linear layers with 2D weights
@@ -194,6 +196,7 @@ class SequentialSensitivityAnalyzer:
                     activation = inp[0]
                     if isinstance(activation, torch.Tensor):
                         captured[layer_name] = activation.detach().clone()
+
             return hook
 
         # Register hooks on all layers
@@ -284,7 +287,7 @@ class SequentialSensitivityAnalyzer:
         # Get original weights
         original_weights = {}
         for name, param in layer.named_parameters():
-            if 'weight' in name and len(param.shape) == 2:
+            if "weight" in name and len(param.shape) == 2:
                 original_weights[name] = param.data.clone()
 
         if not original_weights:
@@ -302,7 +305,7 @@ class SequentialSensitivityAnalyzer:
         total_norm = 0.0
 
         for name, param in quantized_layer.named_parameters():
-            if 'weight' in name and len(param.shape) == 2 and name in original_weights:
+            if "weight" in name and len(param.shape) == 2 and name in original_weights:
                 orig = original_weights[name].float()
                 quant = param.data.float()
 
@@ -348,6 +351,7 @@ class SequentialSensitivityAnalyzer:
         quantizer = ModelQuantizer(quant_config)
 
         from torch.utils.data import DataLoader, TensorDataset
+
         # Use CPU dummy tensor since layer is on CPU
         dummy = torch.zeros(1, 1, device="cpu")
         dummy_loader = DataLoader(TensorDataset(dummy), batch_size=1)
@@ -471,8 +475,7 @@ class SequentialSensitivityAnalyzer:
             threshold = self.config.sensitivity_threshold
             if threshold > 0:
                 result.excluded_layers = [
-                    name for name, score in result.sensitive_layers.items()
-                    if score > threshold
+                    name for name, score in result.sensitive_layers.items() if score > threshold
                 ]
                 self._log(f"Layers above threshold {threshold}: {result.excluded_layers}")
 
@@ -486,6 +489,7 @@ class SequentialSensitivityAnalyzer:
             result.error_message = str(e)
             self._log(f"Error during analysis: {e}")
             import traceback
+
             traceback.print_exc()
 
         finally:

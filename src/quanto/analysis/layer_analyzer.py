@@ -157,8 +157,6 @@ class LayerAnalyzer:
 
             weight = layer.weight.data.float()
             std = weight.std().item()
-            mean = weight.mean().item()
-            abs_mean = weight.abs().mean().item()
 
             # High variance or unusual distributions may indicate sensitivity
             # These are heuristics and may need tuning
@@ -215,12 +213,13 @@ class LayerAnalyzer:
         if aggressive:
             for name, layer in linear_layers.items():
                 in_f, out_f = self._get_layer_dimensions(layer)
-                if self._is_small_dimension(in_f, out_f, threshold=2048):
-                    if "attn" in name.lower() or "attention" in name.lower():
-                        pattern = f"*{name}*"
-                        if pattern not in exclude_patterns:
-                            exclude_patterns.append(pattern)
-                            reasoning[pattern] = f"Small dimension attention layer ({in_f}x{out_f})"
+                if self._is_small_dimension(in_f, out_f, threshold=2048) and (
+                    "attn" in name.lower() or "attention" in name.lower()
+                ):
+                    pattern = f"*{name}*"
+                    if pattern not in exclude_patterns:
+                        exclude_patterns.append(pattern)
+                        reasoning[pattern] = f"Small dimension attention layer ({in_f}x{out_f})"
 
         # Handle last layers
         if exclude_last_n_layers > 0:

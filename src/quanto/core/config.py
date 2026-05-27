@@ -10,7 +10,6 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import Any, Literal
 
-
 # Supported export formats
 ExportFormat = Literal["quark", "awq", "gptq"]
 
@@ -84,7 +83,9 @@ class UnifiedConfig:
     sensitivity_threshold: float = 0.0  # Threshold for excluding sensitive layers (0 = disabled, typical values: 0.12-0.15 for INT4)
     sensitivity_metric: str = "relative"  # One of: relative, mse, mae, cosine, kl
     sensitivity_cache_on_gpu: bool = True  # Cache activations on GPU (faster, uses more memory)
-    max_iterations: int = 10  # Maximum iterations for iterative sensitivity analysis (1 = single-pass)
+    max_iterations: int = (
+        10  # Maximum iterations for iterative sensitivity analysis (1 = single-pass)
+    )
 
     # Evaluation settings
     skip_evaluation: bool = False

@@ -16,16 +16,18 @@ import torch.nn.functional as F
 
 class SensitivityMetric(Enum):
     """Metrics for measuring sensitivity."""
-    MSE = "mse"                    # Mean Squared Error
-    MAE = "mae"                    # Mean Absolute Error
-    COSINE = "cosine"              # 1 - Cosine Similarity
-    KL_DIVERGENCE = "kl"           # KL Divergence (for distributions)
-    RELATIVE_NORM = "relative"     # Relative L2 norm change
+
+    MSE = "mse"  # Mean Squared Error
+    MAE = "mae"  # Mean Absolute Error
+    COSINE = "cosine"  # 1 - Cosine Similarity
+    KL_DIVERGENCE = "kl"  # KL Divergence (for distributions)
+    RELATIVE_NORM = "relative"  # Relative L2 norm change
 
 
 @dataclass
 class SensitivityScore:
     """Sensitivity score for a single layer."""
+
     layer_name: str
     layer_idx: int
     score: float
@@ -91,7 +93,7 @@ class SensitivityScorer:
                 baseline.flatten().unsqueeze(0),
                 quantized.flatten().unsqueeze(0),
             )
-            return (1.0 - cos_sim.item())
+            return 1.0 - cos_sim.item()
 
         elif self.metric == SensitivityMetric.KL_DIVERGENCE:
             # For KL divergence, treat activations as probability distributions
@@ -176,14 +178,16 @@ class SensitivityScorer:
             # Extract layer index from name (e.g., "model.layers.5.mlp" -> 5)
             layer_idx = self._extract_layer_idx(layer_name)
 
-            aggregated.append(SensitivityScore(
-                layer_name=layer_name,
-                layer_idx=layer_idx,
-                score=final_score,
-                metric=self.metric,
-                baseline_norm=0.0,  # Not available after aggregation
-                deviation_norm=0.0,
-            ))
+            aggregated.append(
+                SensitivityScore(
+                    layer_name=layer_name,
+                    layer_idx=layer_idx,
+                    score=final_score,
+                    metric=self.metric,
+                    baseline_norm=0.0,  # Not available after aggregation
+                    deviation_norm=0.0,
+                )
+            )
 
         # Sort by score (highest = most sensitive)
         aggregated.sort(reverse=True)
@@ -192,6 +196,7 @@ class SensitivityScorer:
     def _extract_layer_idx(self, layer_name: str) -> int:
         """Extract layer index from layer name."""
         import re
+
         match = re.search(r"layers\.(\d+)", layer_name)
         if match:
             return int(match.group(1))

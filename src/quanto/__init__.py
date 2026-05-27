@@ -31,6 +31,15 @@ from __future__ import annotations
 __version__ = "0.2.0"
 
 # Import core classes
+# Always available utilities
+from .constants import (
+    DEFAULT_EXCLUDE_PATTERNS,
+    DEFAULT_GROUP_SIZES,
+    MODEL_TYPE_MAPPINGS,
+    PRECISION_TO_SCHEME,
+    SUPPORTED_ALGORITHMS,
+    SUPPORTED_PRECISIONS,
+)
 from .core import (
     AutoQuantizer,
     BaseQuantizer,
@@ -45,16 +54,6 @@ from .core.sensitivity import (
     ActivationCache,
     SensitivityScorer,
     SequentialSensitivityAnalyzer,
-)
-
-# Always available utilities
-from .constants import (
-    DEFAULT_EXCLUDE_PATTERNS,
-    DEFAULT_GROUP_SIZES,
-    MODEL_TYPE_MAPPINGS,
-    PRECISION_TO_SCHEME,
-    SUPPORTED_ALGORITHMS,
-    SUPPORTED_PRECISIONS,
 )
 from .utils import (
     CalibrationDataManager,
