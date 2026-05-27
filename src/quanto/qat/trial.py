@@ -68,8 +68,7 @@ class HFQATTrainer:
             f"precision={precision}, group_size={group_size}, symmetric={symmetric}"
         )
         print(
-            f"[{self.trial_id}] Before PTQ: "
-            f"{torch.cuda.memory_allocated() / 1e9:.2f}GB allocated",
+            f"[{self.trial_id}] Before PTQ: {torch.cuda.memory_allocated() / 1e9:.2f}GB allocated",
             flush=True,
         )
 
@@ -97,7 +96,11 @@ class HFQATTrainer:
         self.train_dataset = self._build_train_datasets()
         self.eval_dataset = MixedDataset(
             datasets=[
-                {"name": cfg.eval_dataset.name, "split": cfg.eval_dataset.split, "subset": cfg.eval_dataset.subset}
+                {
+                    "name": cfg.eval_dataset.name,
+                    "split": cfg.eval_dataset.split,
+                    "subset": cfg.eval_dataset.subset,
+                }
             ],
             tokenizer=self.tokenizer,
             seq_len=cfg.seq_len,
@@ -131,15 +134,11 @@ class HFQATTrainer:
             learning_rate=hyperparams.get("learning_rate", 2e-5),
             num_epochs=num_epochs,
             per_device_batch_size=hyperparams.get("per_device_train_batch_size", 1),
-            gradient_accumulation_steps=hyperparams.get(
-                "gradient_accumulation_steps", 4
-            ),
+            gradient_accumulation_steps=hyperparams.get("gradient_accumulation_steps", 4),
             weight_decay=hyperparams.get("weight_decay", 0.0),
             warmup_ratio=hyperparams.get("warmup_ratio", 0.0),
             gradient_checkpointing=True,
-            only_train_scaling_factor=hyperparams.get(
-                "only_train_scaling_factor", False
-            ),
+            only_train_scaling_factor=hyperparams.get("only_train_scaling_factor", False),
             precision=hyperparams.get("precision", "int4"),
             output_dir=output_dir,
             metric_callback=metric_callback,
@@ -159,7 +158,8 @@ class HFQATTrainer:
             raise RuntimeError("No model loaded")
         cfg = self.search_config
         ppl = compute_perplexity(
-            self.model, self.tokenizer,
+            self.model,
+            self.tokenizer,
             dataset_name=cfg.eval_dataset.name,
             dataset_subset=cfg.eval_dataset.subset,
             dataset_split=cfg.eval_dataset.split,
@@ -185,8 +185,7 @@ class HFQATTrainer:
             )
 
         logger.info(
-            f"[{self.trial_id}] Saved checkpoint: "
-            f"{len(scale_state)} trainable params to {path}"
+            f"[{self.trial_id}] Saved checkpoint: {len(scale_state)} trainable params to {path}"
         )
 
     def load_checkpoint(self, path: str) -> None:

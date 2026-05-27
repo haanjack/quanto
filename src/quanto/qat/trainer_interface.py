@@ -31,10 +31,8 @@ class TensorBoardSink:
     def __init__(self, log_dir: str, run_name: str):
         try:
             from torch.utils.tensorboard.writer import SummaryWriter
-        except ImportError:
-            raise ImportError(
-                "TensorBoard not installed. Run: pip install tensorboard"
-            )
+        except ImportError as err:
+            raise ImportError("TensorBoard not installed. Run: pip install tensorboard") from err
         self._writer = SummaryWriter(log_dir=log_dir, comment=run_name)
 
     def log(self, metrics: dict[str, float], step: int | None = None) -> None:
@@ -59,8 +57,8 @@ class WandbSink:
     ):
         try:
             import wandb
-        except ImportError:
-            raise ImportError("wandb not installed. Run: pip install wandb")
+        except ImportError as err:
+            raise ImportError("wandb not installed. Run: pip install wandb") from err
         self._run = wandb.init(
             project=project,
             name=run_name,
@@ -124,12 +122,8 @@ def build_sinks(
         if backend == "tensorboard":
             import os
 
-            tb_dir = tracking_config.tensorboard_dir or os.path.join(
-                output_dir, "tb_logs"
-            )
-            sinks.append(
-                TensorBoardSink(log_dir=tb_dir, run_name=f"member_{member_id}")
-            )
+            tb_dir = tracking_config.tensorboard_dir or os.path.join(output_dir, "tb_logs")
+            sinks.append(TensorBoardSink(log_dir=tb_dir, run_name=f"member_{member_id}"))
         elif backend == "wandb":
             sinks.append(
                 WandbSink(

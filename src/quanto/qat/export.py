@@ -68,9 +68,7 @@ def export_best_model(
     tokenizer_path = tokenizer_path or model_path
 
     logger.info(f"Loading model from {model_path} for export")
-    tokenizer = AutoTokenizer.from_pretrained(
-        tokenizer_path, trust_remote_code=trust_remote_code
-    )
+    tokenizer = AutoTokenizer.from_pretrained(tokenizer_path, trust_remote_code=trust_remote_code)
 
     model = AutoModelForCausalLM.from_pretrained(
         model_path,
@@ -104,9 +102,8 @@ def export_best_model(
     # Freeze quantizers (required before export_safetensors)
     logger.info("Freezing quantizers for export")
     from quark.torch.quantization.nn.modules.quantize_linear import QuantLinear
-    from quark.torch.quantization.tensor_quantize import FrozenScaledFakeQuantize
 
-    for name, mod in model.named_modules():
+    for _name, mod in model.named_modules():
         if isinstance(mod, QuantLinear) and hasattr(mod, "_weight_quantizer"):
             wq = mod._weight_quantizer
             if hasattr(wq, "merge_scale"):

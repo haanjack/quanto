@@ -16,8 +16,8 @@ import sys
 
 from .config import load_search_config
 from .sampler import sample_initial_population
-from .tuner import run_pbt
 from .trial import HFQATTrainer
+from .tuner import run_pbt
 
 logger = logging.getLogger(__name__)
 
@@ -71,7 +71,9 @@ def main() -> int:
             summary = json.load(f)
 
         best_member_id = summary["best_member_id"]
-        scales_path = os.path.join(search_dir, "population", f"member_{best_member_id}", "scales.pt")
+        scales_path = os.path.join(
+            search_dir, "population", f"member_{best_member_id}", "scales.pt"
+        )
         if not os.path.exists(scales_path):
             print(f"Error: No scales.pt at {scales_path}", file=sys.stderr)
             return 1
@@ -103,7 +105,7 @@ def main() -> int:
         print(f"Population: {config.tuner_config.population_size}")
         print(f"Exploit interval: {config.tuner_config.exploit_interval} epochs")
         print(f"Target: {config.target.metric} {config.target.mode} <= {config.target.threshold}")
-        print(f"\nInitial population:")
+        print("\nInitial population:")
         for m in population:
             print(f"  Member {m.member_id}: {json.dumps(m.hyperparams, default=str)}")
         return 0

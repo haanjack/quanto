@@ -93,7 +93,9 @@ class QATSearchConfig:
 
     # Fixed dataset config
     train_datasets: list[DatasetSpec] = field(default_factory=list)
-    eval_dataset: DatasetSpec = field(default_factory=lambda: DatasetSpec(name="wikitext", split="test"))
+    eval_dataset: DatasetSpec = field(
+        default_factory=lambda: DatasetSpec(name="wikitext", split="test")
+    )
     seq_len: int = 512
     max_train_samples: int | None = None
     max_eval_samples: int | None = None
@@ -159,13 +161,15 @@ def _parse_datasets(raw: dict[str, Any]) -> tuple[list[DatasetSpec], DatasetSpec
     """Parse datasets section from YAML."""
     train_specs = []
     for ds in raw.get("train", []):
-        train_specs.append(DatasetSpec(
-            name=ds["name"],
-            ratio=ds.get("ratio", 1.0),
-            subset=ds.get("subset"),
-            split=ds.get("split", "train"),
-            text_column=ds.get("text_column", "text"),
-        ))
+        train_specs.append(
+            DatasetSpec(
+                name=ds["name"],
+                ratio=ds.get("ratio", 1.0),
+                subset=ds.get("subset"),
+                split=ds.get("split", "train"),
+                text_column=ds.get("text_column", "text"),
+            )
+        )
 
     eval_raw = raw.get("eval", {})
     eval_spec = DatasetSpec(

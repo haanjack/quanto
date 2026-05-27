@@ -34,7 +34,7 @@ def precompute_quantized_weights(model):
     freed_bytes = 0
     patched = 0
 
-    for name, mod in model.named_modules():
+    for _name, mod in model.named_modules():
         if not isinstance(mod, QuantLinear):
             continue
         if not hasattr(mod, "_weight_quantizer") or mod._weight_quantizer is None:
@@ -49,8 +49,6 @@ def precompute_quantized_weights(model):
         group_size = wq.group_size
         quant_min = wq.quant_min
         quant_max = wq.quant_max
-        ch_axis = wq.ch_axis
-
         # Compute quantized integers: round(W / S).clamp(min, max)
         with torch.no_grad():
             if group_size and group_size > 0 and weight.ndim == 2:
@@ -106,7 +104,6 @@ def _dequant_forward(self, X):
     return qi * self.scale
 
 
-
 class MetricBridgeCallback(TrainerCallback):
     """Bridges HF Trainer eval metrics to the generic MetricCallback interface."""
 
@@ -134,6 +131,7 @@ class QATSaveCallback(TrainerCallback):
         # Save only scale parameters
         checkpoint_dir = f"{args.output_dir}/checkpoint-{state.global_step}"
         import os
+
         os.makedirs(checkpoint_dir, exist_ok=True)
 
         scale_state = {}
@@ -185,9 +183,12 @@ def train_qat(
         Trainer instance after training.
     """
     if only_train_scaling_factor and precision == "int4":
-        print(f"[QAT] Before precompute: {torch.cuda.memory_allocated()/1e9:.2f}GB", flush=True)
+        print(f"[QAT] Before precompute: {torch.cuda.memory_allocated() / 1e9:.2f}GB", flush=True)
         freed = precompute_quantized_weights(model)
-        print(f"[QAT] After precompute: {torch.cuda.memory_allocated()/1e9:.2f}GB (freed={freed:.2f}GB)", flush=True)
+        print(
+            f"[QAT] After precompute: {torch.cuda.memory_allocated() / 1e9:.2f}GB (freed={freed:.2f}GB)",
+            flush=True,
+        )
         # Freeze all params except quantization scales created by precompute
         for name, p in model.named_parameters():
             if "scale" not in name:

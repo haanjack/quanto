@@ -30,10 +30,7 @@ class PopulationMember:
         """Record a metric value. Returns True if best improved."""
         self.metric_history.append(value)
         improved = False
-        if mode == "min" and value < self.best_metric:
-            self.best_metric = value
-            improved = True
-        elif mode == "max" and value > self.best_metric:
+        if mode == "min" and value < self.best_metric or mode == "max" and value > self.best_metric:
             self.best_metric = value
             improved = True
         return improved
@@ -62,9 +59,7 @@ class PopulationMember:
         )
 
 
-def clone_checkpoint(
-    src_member: PopulationMember, dst_member: PopulationMember
-) -> None:
+def clone_checkpoint(src_member: PopulationMember, dst_member: PopulationMember) -> None:
     """Copy checkpoint from donor to recipient for PBT exploit.
 
     Only copies files on disk, not GPU memory.

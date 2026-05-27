@@ -8,6 +8,7 @@ and combines them according to specified ratios.
 from __future__ import annotations
 
 import logging
+
 import torch
 from datasets import load_dataset
 from torch.utils.data import Dataset
@@ -37,11 +38,13 @@ class TokenBlockDataset(Dataset):
             current_block.extend(ids)
             while len(current_block) >= seq_len:
                 block = current_block[:seq_len]
-                self.blocks.append({
-                    "input_ids": torch.tensor(block, dtype=torch.long),
-                    "labels": torch.tensor(block, dtype=torch.long),
-                    "attention_mask": torch.ones(seq_len, dtype=torch.long),
-                })
+                self.blocks.append(
+                    {
+                        "input_ids": torch.tensor(block, dtype=torch.long),
+                        "labels": torch.tensor(block, dtype=torch.long),
+                        "attention_mask": torch.ones(seq_len, dtype=torch.long),
+                    }
+                )
                 current_block = current_block[seq_len:]
 
     def __len__(self) -> int:
@@ -125,7 +128,9 @@ class MixedDataset(Dataset):
         indices = torch.randperm(len(self.samples), generator=generator).tolist()
         self.samples = [self.samples[i] for i in indices]
 
-        logger.info(f"MixedDataset: {len(self.samples)} total samples from {len(datasets)} datasets")
+        logger.info(
+            f"MixedDataset: {len(self.samples)} total samples from {len(datasets)} datasets"
+        )
 
     def __len__(self) -> int:
         return len(self.samples)

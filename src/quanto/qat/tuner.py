@@ -13,7 +13,8 @@ import logging
 import os
 import random
 import time
-from typing import Any, Callable
+from collections.abc import Callable
+from typing import Any
 
 from .config import QATSearchConfig
 from .population import (
@@ -113,7 +114,6 @@ def _should_stop(
 ) -> bool:
     """Check stopping criteria."""
     target = config.target
-    tuner_cfg = config.tuner_config
 
     # All members finished
     if all(m.finished for m in population):
@@ -256,8 +256,11 @@ def run_pbt(
                         member.finished = True
 
                     # Early stopping patience
-                    if tuner_cfg.early_stopping_patience > 0 and len(member.metric_history) >= tuner_cfg.early_stopping_patience:
-                        recent = member.metric_history[-tuner_cfg.early_stopping_patience:]
+                    if (
+                        tuner_cfg.early_stopping_patience > 0
+                        and len(member.metric_history) >= tuner_cfg.early_stopping_patience
+                    ):
+                        recent = member.metric_history[-tuner_cfg.early_stopping_patience :]
                         if target.mode == "min" and all(r >= member.best_metric for r in recent):
                             logger.info(
                                 f"Early stopping member {member.member_id}: "
@@ -269,9 +272,8 @@ def run_pbt(
                     trainer.save_checkpoint(member.checkpoint_path)
 
                     # Track overall best
-                    is_better = (
-                        (target.mode == "min" and metric_val < best_overall)
-                        or (target.mode == "max" and metric_val > best_overall)
+                    is_better = (target.mode == "min" and metric_val < best_overall) or (
+                        target.mode == "max" and metric_val > best_overall
                     )
                     if is_better:
                         best_overall = metric_val
@@ -321,9 +323,7 @@ def _log_round_summary(
     target: Any,
 ) -> None:
     """Log a brief summary after each round."""
-    metrics_str = ", ".join(
-        f"m{m.member_id}={m.best_metric:.4f}" for m in population
-    )
+    metrics_str = ", ".join(f"m{m.member_id}={m.best_metric:.4f}" for m in population)
     logger.info(f"Round {round_num} summary: {metrics_str}")
 
 
@@ -345,12 +345,12 @@ def _finalize(
     )
 
     # Check if target met
-    target_met = False
-    if target.threshold is not None:
-        if target.mode == "min" and best_member.best_metric <= target.threshold:
-            target_met = True
-        elif target.mode == "max" and best_member.best_metric >= target.threshold:
-            target_met = True
+    target_met = target.threshold is not None and (
+        target.mode == "min"
+        and best_member.best_metric <= target.threshold
+        or target.mode == "max"
+        and best_member.best_metric >= target.threshold
+    )
 
     if target_met:
         logger.info(
@@ -387,7 +387,6 @@ def _finalize(
     logger.info(f"Target met: {target_met}")
 
     # Export best model as real-quantized safetensors
-    exported = False
     export_dir = os.path.join(config.output_dir, "best_model")
     scales_path = os.path.join(best_member.checkpoint_path, "scales.pt")
 
@@ -403,7 +402,6 @@ def _finalize(
                 trust_remote_code=config.trust_remote_code,
                 weight_format=config.export_weight_format,
             )
-            exported = True
             summary["exported"] = True
             summary["export_dir"] = export_dir
             logger.info(f"Best model exported to {export_dir}")

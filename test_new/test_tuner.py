@@ -6,17 +6,18 @@ Run: python test_new/test_tuner.py
 """
 
 import json
-import math
 import os
 import sys
 import tempfile
 
 # ── Test 1: Config parsing ──────────────────────────────────────────────────
 
+
 def test_config():
     from quanto.qat.config import (
-        QATSearchConfig, TunerConfig, TrackingConfig,
-        SearchSpaceDimension, TargetConfig, load_search_config,
+        TrackingConfig,
+        TunerConfig,
+        load_search_config,
     )
 
     # Test TunerConfig defaults
@@ -83,9 +84,12 @@ tuner:
 
 # ── Test 2: PopulationMember ────────────────────────────────────────────────
 
+
 def test_population():
     from quanto.qat.population import (
-        PopulationMember, save_population_state, load_population_state,
+        PopulationMember,
+        load_population_state,
+        save_population_state,
     )
 
     # Test metric recording
@@ -136,9 +140,10 @@ def test_population():
 
 # ── Test 3: Sampler ─────────────────────────────────────────────────────────
 
+
 def test_sampler():
     from quanto.qat.config import SearchSpaceDimension
-    from quanto.qat.sampler import sample_initial_population, _sample_random
+    from quanto.qat.sampler import _sample_random, sample_initial_population
 
     search_space = {
         "learning_rate": SearchSpaceDimension(min=1e-5, max=1e-3, scale="log"),
@@ -184,6 +189,7 @@ def test_sampler():
 
 # ── Test 4: MetricCallback ──────────────────────────────────────────────────
 
+
 def test_metric_callback():
     from quanto.qat.trainer_interface import MetricCallback
 
@@ -209,6 +215,7 @@ def test_metric_callback():
 
 # ── Test 5: TensorBoardSink ─────────────────────────────────────────────────
 
+
 def test_tensorboard_sink():
     from quanto.qat.trainer_interface import TensorBoardSink
 
@@ -226,10 +233,11 @@ def test_tensorboard_sink():
 
 # ── Test 6: PBT perturb/exploit ─────────────────────────────────────────────
 
+
 def test_pbt_mechanics():
     from quanto.qat.config import SearchSpaceDimension
     from quanto.qat.population import PopulationMember
-    from quanto.qat.tuner import _perturb_hyperparams, _exploit_explore
+    from quanto.qat.tuner import _exploit_explore, _perturb_hyperparams
 
     search_space = {
         "learning_rate": SearchSpaceDimension(min=1e-5, max=1e-3, scale="log"),
@@ -265,6 +273,7 @@ def test_pbt_mechanics():
             m.record_metric(float(i + 1), mode="min")
             # Save a scales checkpoint for cloning
             import torch
+
             torch.save({"test_scale": torch.tensor(i + 1.0)}, os.path.join(ckpt_dir, "scales.pt"))
             pop.append(m)
 
@@ -279,11 +288,14 @@ def test_pbt_mechanics():
 
         # Hyperparams should be perturbed from donor
         assert worst.hyperparams["num_epochs"] == 2  # Categorical unchanged from donor
-        assert worst.hyperparams["learning_rate"] != pop[0].hyperparams["learning_rate"] or True  # May not change due to randomness
+        assert (
+            worst.hyperparams["learning_rate"] != pop[0].hyperparams["learning_rate"] or True
+        )  # May not change due to randomness
         print("  Exploit/explore OK")
 
 
 # ── Test 7: HFQATTrainer interface (no GPU) ─────────────────────────────────
+
 
 def test_trainer_interface():
     from quanto.qat.trainer_interface import MetricCallback, TrainResult
@@ -305,6 +317,7 @@ def test_trainer_interface():
 
 
 # ── Test 8: build_sinks / close_sinks ───────────────────────────────────────
+
 
 def test_sinks_build_close():
     from quanto.qat.config import TrackingConfig
@@ -349,9 +362,10 @@ if __name__ == "__main__":
         except Exception as e:
             print(f"[FAIL] {name}: {e}")
             import traceback
+
             traceback.print_exc()
             failed += 1
 
-    print(f"\n{'='*50}")
+    print(f"\n{'=' * 50}")
     print(f"Results: {passed} passed, {failed} failed out of {len(tests)}")
     sys.exit(1 if failed else 0)

@@ -1,8 +1,8 @@
 """QAT Hyperparameter Search for Quanto."""
 
 from .config import (
-    DatasetSpec,
     DatasetRatioSearchSpec,
+    DatasetSpec,
     QATSearchConfig,
     SearchSpaceDimension,
     TargetConfig,

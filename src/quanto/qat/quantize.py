@@ -34,7 +34,8 @@ def build_quant_config(
 ) -> QConfig:
     if precision == "int4":
         weight_spec = (Int4PerGroupSpec if symmetric else Uint4PerGroupSpec)(
-            ch_axis=1, group_size=group_size,
+            ch_axis=1,
+            group_size=group_size,
         ).to_quantization_spec()
     elif precision == "mxfp4":
         weight_spec = OCP_MXFP4Spec(ch_axis=-1).to_quantization_spec()
@@ -47,14 +48,24 @@ def build_quant_config(
 
 
 def apply_fake_quant(
-    model, tokenizer, precision: str, group_size: int = 128, symmetric: bool = True,
-    calibration_dataset: str = "wikitext", num_calib_samples: int = 128,
-    seq_len: int = 512, device: str = "cuda", exclude_layers: list[str] | None = None,
+    model,
+    tokenizer,
+    precision: str,
+    group_size: int = 128,
+    symmetric: bool = True,
+    calibration_dataset: str = "wikitext",
+    num_calib_samples: int = 128,
+    seq_len: int = 512,
+    device: str = "cuda",
+    exclude_layers: list[str] | None = None,
 ):
     quant_config = build_quant_config(precision, group_size, symmetric, exclude_layers)
     calib_loader = get_calib_dataloader(
-        dataset_name_or_path=calibration_dataset, tokenizer=tokenizer,
-        num_calib_data=num_calib_samples, seqlen=seq_len, device=device,
+        dataset_name_or_path=calibration_dataset,
+        tokenizer=tokenizer,
+        num_calib_data=num_calib_samples,
+        seqlen=seq_len,
+        device=device,
     )
     quantizer = ModelQuantizer(quant_config, multi_device=True)
     model = quantizer.quantize_model(model, calib_loader)
