@@ -31,7 +31,7 @@ from quark.torch import LLMTemplate, ModelQuantizer
 from quark.torch.quantization.config.config import Int4PerGroupSpec, QConfig, QLayerConfig
 from transformers import AutoConfig, AutoTokenizer
 
-from ..constants import PRECISION_TO_SCHEME, SUPPORTED_PRECISIONS
+from ..constants import PRECISION_TO_SCHEME
 from ..utils import (
     clear_gpu_memory,
     detect_model_type,
@@ -175,16 +175,14 @@ class UnifiedQuantizer:
                 with open(index_file) as f:
                     index_data = json.load(f)
                 self.weight_index = index_data.get("weight_map", {})
-                self.safetensors_files = [
-                    model_path / f for f in set(self.weight_index.values())
-                ]
+                self.safetensors_files = [model_path / f for f in set(self.weight_index.values())]
             else:
                 raise FileNotFoundError(f"No safetensors files found in {model_path}")
         else:
             # Build index by scanning files
             for sf_file in self.safetensors_files:
                 with safe_open(sf_file, framework="pt") as f:
-                    for key in f.keys():
+                    for key in f:
                         self.weight_index[key] = str(sf_file)
 
         self._log(f"Found {len(self.safetensors_files)} safetensors files")
@@ -228,7 +226,9 @@ class UnifiedQuantizer:
         sensitive = []
 
         # Sample a few layers for sensitivity analysis
-        sample_indices = [0, num_layers // 2, num_layers - 1] if num_layers > 3 else list(range(num_layers))
+        sample_indices = (
+            [0, num_layers // 2, num_layers - 1] if num_layers > 3 else list(range(num_layers))
+        )
 
         for idx in sample_indices:
             layer_weights = self._load_layer_weights(idx, layer_prefix)
@@ -415,7 +415,7 @@ class UnifiedQuantizer:
     def _get_layer_weight_names(self, layer_idx: int, layer_prefix: str) -> list[str]:
         """Get all weight names for a specific layer."""
         layer_pattern = f"{layer_prefix}.{layer_idx}."
-        return [k for k in self.weight_index.keys() if k.startswith(layer_pattern)]
+        return [k for k in self.weight_index if k.startswith(layer_pattern)]
 
     def _load_layer_weights(self, layer_idx: int, layer_prefix: str) -> dict[str, torch.Tensor]:
         """Load weights for specific layer from safetensors."""
@@ -497,16 +497,14 @@ class UnifiedQuantizer:
         import fnmatch
 
         excluded_weights = set()
-        for name in layer_weights.keys():
+        for name in layer_weights:
             for pattern in exclude_patterns:
                 if fnmatch.fnmatch(name, pattern) or pattern in name:
                     excluded_weights.add(name)
                     break
 
         # Filter weights to quantize
-        weights_to_quantize = {
-            k: v for k, v in layer_weights.items() if k not in excluded_weights
-        }
+        weights_to_quantize = {k: v for k, v in layer_weights.items() if k not in excluded_weights}
 
         if not weights_to_quantize:
             # All excluded, return original weights
@@ -657,10 +655,12 @@ class UnifiedQuantizer:
         host_memory_gb = ram.total / (1024**3)
         host_available_gb = ram.available / (1024**3)
 
-        self._log(f"Memory assessment:")
+        self._log("Memory assessment:")
         self._log(f"  Model size: {model_size_gb:.1f} GB")
         self._log(f"  GPU memory: {gpu_memory_gb:.1f} GB")
-        self._log(f"  Host memory: {host_memory_gb:.1f} GB total, {host_available_gb:.1f} GB available")
+        self._log(
+            f"  Host memory: {host_memory_gb:.1f} GB total, {host_available_gb:.1f} GB available"
+        )
 
         # Decision logic with memory hierarchy
         # Threshold: leave 30% buffer for activations, OS, and other processes
@@ -668,7 +668,9 @@ class UnifiedQuantizer:
         # Check 1: Can model fit entirely in GPU?
         gpu_threshold = gpu_memory_gb * 0.7  # 70% of GPU for model, 30% for activations
         if model_size_gb < gpu_threshold:
-            self._log(f"  → Strategy: 'full' (model {model_size_gb:.1f}GB < GPU threshold {gpu_threshold:.1f}GB)")
+            self._log(
+                f"  → Strategy: 'full' (model {model_size_gb:.1f}GB < GPU threshold {gpu_threshold:.1f}GB)"
+            )
             return "full"
 
         # Check 2: Can model fit in CPU/Host RAM?
@@ -679,11 +681,15 @@ class UnifiedQuantizer:
         host_threshold = host_available_gb * 0.7  # Use 70% of available RAM
 
         if model_size_gb < host_threshold:
-            self._log(f"  → Strategy: 'layerwise_cpu' (model {model_size_gb:.1f}GB < host threshold {host_threshold:.1f}GB)")
+            self._log(
+                f"  → Strategy: 'layerwise_cpu' (model {model_size_gb:.1f}GB < host threshold {host_threshold:.1f}GB)"
+            )
             return "layerwise_cpu"
 
         # Check 3: Model is too large for CPU RAM, need lazy loading from disk
-        self._log(f"  → Strategy: 'lazy' (model {model_size_gb:.1f}GB > host threshold {host_threshold:.1f}GB)")
+        self._log(
+            f"  → Strategy: 'lazy' (model {model_size_gb:.1f}GB > host threshold {host_threshold:.1f}GB)"
+        )
         return "lazy"
 
     def _run_lazy_quantization(self) -> QuantizationResult:
@@ -755,11 +761,13 @@ class UnifiedQuantizer:
                 )
                 save_file(quantized_weights, layer_file)
 
-                quantized_layers.append({
-                    "layer_idx": layer_idx,
-                    "file": str(layer_file),
-                    "num_weights": len(quantized_weights),
-                })
+                quantized_layers.append(
+                    {
+                        "layer_idx": layer_idx,
+                        "file": str(layer_file),
+                        "num_weights": len(quantized_weights),
+                    }
+                )
 
                 # Clear memory
                 del layer_weights, quantized_weights
@@ -775,10 +783,8 @@ class UnifiedQuantizer:
             # Process non-layer parameters (embeddings, lm_head, etc.)
             self._log("\n=== Processing non-layer parameters ===")
             non_layer_weights = {}
-            for name in self.weight_index.keys():
-                if not any(
-                    name.startswith(f"{layer_prefix}.{i}") for i in range(num_layers)
-                ):
+            for name in self.weight_index:
+                if not any(name.startswith(f"{layer_prefix}.{i}") for i in range(num_layers)):
                     # Load this weight
                     file_path = self.weight_index[name]
                     with safe_open(file_path, framework="pt", device="cpu") as f:
@@ -794,46 +800,7 @@ class UnifiedQuantizer:
             self.tokenizer.save_pretrained(self.config.output_dir)
 
             # Add quantization_config to hf_config for Quark compatibility
-            quant_scheme = self._get_quant_scheme()
-            group_size = 128  # Default group size for INT4
-            if "128" in quant_scheme:
-                group_size = 128
-            elif "64" in quant_scheme:
-                group_size = 64
-
-            quantization_config = {
-                "quant_method": "quark",
-                "quant_mode": "eager_mode",
-                "global_quant_config": {
-                    "weight": {
-                        "dtype": "int4" if self.config.precision.startswith("int4") else "int8",
-                        "qscheme": "per_group",
-                        "group_size": group_size,
-                        "ch_axis": -1,
-                        "is_dynamic": False,
-                        "symmetric": True,
-                        "scale_type": "float",
-                        "is_scale_quant": False,
-                        "observer_cls": "PerGroupMinMaxObserver",
-                        "round_method": "half_even",
-                    },
-                    "input_tensors": None,
-                    "output_tensors": None,
-                    "bias": None,
-                },
-                "kv_cache_quant_config": {},
-                "layer_quant_config": {},
-                "layer_type_quant_config": {},
-                "exclude": exclude_layers,
-                "export": {
-                    "kv_cache_group": [],
-                    "min_kv_scale": 0.0,
-                    "pack_method": "reorder",
-                    "weight_format": "real_quantized",
-                    "weight_merge_groups": None,
-                },
-            }
-            self.hf_config.quantization_config = quantization_config
+            self._add_quantization_config(exclude_layers)
             self.hf_config.save_pretrained(self.config.output_dir)
 
             # Save quantization metadata
@@ -869,6 +836,7 @@ class UnifiedQuantizer:
             result.error_message = str(e)
             self._log(f"Error during quantization: {e}")
             import traceback
+
             traceback.print_exc()
 
         return result
@@ -895,21 +863,20 @@ class UnifiedQuantizer:
 
         # Load layer files
         layer_files = sorted(
-            layers_dir.glob("layer_*.safetensors"),
-            key=lambda x: int(x.stem.split("_")[1])
+            layers_dir.glob("layer_*.safetensors"), key=lambda x: int(x.stem.split("_")[1])
         )
         self._log(f"Loading {len(layer_files)} layer files...")
 
         for layer_file in tqdm(layer_files, desc="Loading layers"):
             with safe_open(layer_file, framework="pt", device="cpu") as f:
-                for key in f.keys():
+                for key in f:
                     all_weights[key] = f.get_tensor(key)
 
         # Load non-layer weights
         if non_layer_file.exists():
             self._log("Loading non-layer weights...")
             with safe_open(non_layer_file, framework="pt", device="cpu") as f:
-                for key in f.keys():
+                for key in f:
                     all_weights[key] = f.get_tensor(key)
 
         self._log(f"Total tensors: {len(all_weights)}")
@@ -945,17 +912,15 @@ class UnifiedQuantizer:
             shard_file = output_dir / shard_name
             save_file(shard, shard_file)
 
-            for name in shard.keys():
+            for name in shard:
                 weight_map[name] = shard_name
 
         # Create index file
         index = {
             "metadata": {
-                "total_size": sum(
-                    t.numel() * t.element_size() for t in all_weights.values()
-                )
+                "total_size": sum(t.numel() * t.element_size() for t in all_weights.values())
             },
-            "weight_map": weight_map
+            "weight_map": weight_map,
         }
 
         index_file = output_dir / "model.safetensors.index.json"
@@ -1073,6 +1038,9 @@ class UnifiedQuantizer:
             output_file = os.path.join(self.config.output_dir, "model.safetensors")
             save_file(quantized_state_dict, output_file)
 
+            # Add quantization_config to hf_config for Quark compatibility
+            self._add_quantization_config(exclude_layers)
+
             self.tokenizer.save_pretrained(self.config.output_dir)
             self.hf_config.save_pretrained(self.config.output_dir)
 
@@ -1082,6 +1050,7 @@ class UnifiedQuantizer:
             result.output_dir = self.config.output_dir
             result.model_type = self.model_type
             result.quant_scheme = self._get_quant_scheme()
+            result.precision = self.config.precision
             result.timing = self.timing
 
             self._print_summary(result)
@@ -1091,6 +1060,7 @@ class UnifiedQuantizer:
             result.error_message = str(e)
             self._log(f"Error during quantization: {e}")
             import traceback
+
             traceback.print_exc()
 
         return result
@@ -1176,9 +1146,64 @@ class UnifiedQuantizer:
             result.error_message = str(e)
             self._log(f"Error during quantization: {e}")
             import traceback
+
             traceback.print_exc()
 
         return result
+
+    def _add_quantization_config(self, exclude_layers: list[str] | None = None) -> None:
+        """Add quantization_config to hf_config for Quark/vLLM compatibility."""
+        quant_scheme = self._get_quant_scheme()
+        group_size = 64 if "64" in quant_scheme else 128
+
+        # Determine dtype for quantization config
+        precision = self.config.precision
+        if precision.startswith("int4"):
+            weight_dtype = "int4"
+        elif precision.startswith("int8"):
+            weight_dtype = "int8"
+        elif precision == "fp8":
+            weight_dtype = "fp8"
+        elif precision == "mxfp4":
+            weight_dtype = "mxfp4"
+        elif precision == "mxfp6":
+            weight_dtype = "mxfp6"
+        else:
+            weight_dtype = precision
+
+        quantization_config = {
+            "quant_method": "quark",
+            "quant_mode": "eager_mode",
+            "global_quant_config": {
+                "weight": {
+                    "dtype": weight_dtype,
+                    "qscheme": "per_group",
+                    "group_size": group_size,
+                    "ch_axis": -1,
+                    "is_dynamic": False,
+                    "symmetric": True,
+                    "scale_type": "float",
+                    "is_scale_quant": False,
+                    "observer_cls": "PerGroupMinMaxObserver",
+                    "round_method": "half_even",
+                },
+                "input_tensors": None,
+                "output_tensors": None,
+                "bias": None,
+            },
+            "kv_cache_quant_config": {},
+            "layer_quant_config": {},
+            "layer_type_quant_config": {},
+            "exclude": exclude_layers or [],
+            "export": {
+                "kv_cache_group": [],
+                "min_kv_scale": 0.0,
+                "pack_method": "reorder",
+                "weight_format": "real_quantized",
+                "weight_merge_groups": None,
+            },
+        }
+        self.hf_config.quantization_config = quantization_config
 
     def _print_summary(self, result: QuantizationResult) -> None:
         """Print quantization summary."""

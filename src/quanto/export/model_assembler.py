@@ -88,7 +88,7 @@ class ModelAssembler:
 
             for layer_file in batch_files:
                 with safe_open(layer_file, framework="pt", device="cpu") as f:
-                    for key in f.keys():
+                    for key in f:
                         all_tensors[key] = f.get_tensor(key)
 
             total_tensors = len(all_tensors)
@@ -158,7 +158,7 @@ class ModelAssembler:
         if not tensors_to_copy or not weight_map:
             for sf_file in model_path.glob("*.safetensors"):
                 with safe_open(sf_file, framework="pt", device="cpu") as f:
-                    for key in f.keys():
+                    for key in f:
                         for prefix in non_layer_prefixes:
                             if key.startswith(prefix):
                                 tensors_to_copy.add(key)
@@ -166,12 +166,12 @@ class ModelAssembler:
                                 break
         else:
             # Copy from indexed files
-            files_needed = set(weight_map[name] for name in tensors_to_copy)
+            files_needed = {weight_map[name] for name in tensors_to_copy}
             for sf_file in files_needed:
                 sf_path = model_path / sf_file
                 if sf_path.exists():
                     with safe_open(sf_path, framework="pt", device="cpu") as f:
-                        for key in f.keys():
+                        for key in f:
                             if key in tensors_to_copy:
                                 all_tensors[key] = f.get_tensor(key)
 

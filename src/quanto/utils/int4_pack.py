@@ -152,7 +152,7 @@ def pack_layer_weights(
     # Find all weight keys (excluding quantizer params and non-2D tensors)
     weight_keys = [
         k
-        for k in layer_weights.keys()
+        for k in layer_weights
         if k.endswith(".weight") and "_quantizer" not in k and len(layer_weights[k].shape) == 2
     ]
 
