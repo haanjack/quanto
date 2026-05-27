@@ -225,8 +225,9 @@ def test_tensorboard_sink():
         sink.log({"eval_loss": 2.0}, step=2)
         sink.close()
 
-        # Verify events file was created
-        events = [f for f in os.listdir(tmpdir) if f.startswith("events.out")]
+        # Verify events file was created (now in log_dir/run_name subdirectory)
+        tb_subdir = os.path.join(tmpdir, "test")
+        events = [f for f in os.listdir(tb_subdir) if f.startswith("events.out")]
         assert len(events) >= 1
         print(f"  TensorBoardSink OK (wrote {len(events)} event files)")
 

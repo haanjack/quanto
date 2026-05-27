@@ -214,7 +214,7 @@ def _parse_target(raw: dict[str, Any]) -> TargetConfig:
 
 def load_search_config(path: str | Path) -> QATSearchConfig:
     """Load and parse a QAT search YAML config file."""
-    with open(path) as f:
+    with open(path, encoding="utf-8") as f:
         raw = yaml.safe_load(f)
 
     model = raw.get("model", {})

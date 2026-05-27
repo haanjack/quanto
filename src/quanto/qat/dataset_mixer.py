@@ -148,11 +148,10 @@ def _resolve_dataset_name(name: str) -> tuple[str, str | None]:
 
 def _tokenize_texts(texts: list[str], tokenizer) -> list[list[int]]:
     """Tokenize a list of texts into token ID lists."""
-    all_ids = []
-    for text in texts:
-        tokens = tokenizer(text, add_special_tokens=True)
-        all_ids.append(tokens["input_ids"])
-    return all_ids
+    if not texts:
+        return []
+    encodings = tokenizer(texts, add_special_tokens=True, padding=False, truncation=False)
+    return encodings["input_ids"]
 
 
 def normalize_ratios(raw_ratios: list[float], min_ratio: float = 0.1) -> list[float]:

@@ -8,6 +8,7 @@ tracking sinks (TensorBoard, W&B) that plug into the MetricCallback.
 from __future__ import annotations
 
 import logging
+import os
 from dataclasses import dataclass
 from typing import Any, Protocol
 
@@ -33,7 +34,7 @@ class TensorBoardSink:
             from torch.utils.tensorboard.writer import SummaryWriter
         except ImportError as err:
             raise ImportError("TensorBoard not installed. Run: pip install tensorboard") from err
-        self._writer = SummaryWriter(log_dir=log_dir, comment=run_name)
+        self._writer = SummaryWriter(log_dir=os.path.join(log_dir, run_name))
 
     def log(self, metrics: dict[str, float], step: int | None = None) -> None:
         for k, v in metrics.items():

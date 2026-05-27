@@ -38,7 +38,7 @@ class HFQATTrainer:
         self.eval_dataset = None
         self._epochs_trained = 0
 
-    def initialize(self, sampled_config: dict) -> None:
+    def initialize(self, sampled_config: dict, is_resume: bool = False) -> None:
         """Load model, apply PTQ, build datasets."""
         self.sampled_config = sampled_config
         cfg = self.search_config
@@ -79,7 +79,7 @@ class HFQATTrainer:
             group_size=group_size,
             symmetric=symmetric,
             calibration_dataset=sampled_config.get("calibration_dataset", "wikitext"),
-            num_calib_samples=sampled_config.get("num_calib_samples", 128),
+            num_calib_samples=1 if is_resume else sampled_config.get("num_calib_samples", 128),
             seq_len=cfg.seq_len,
             device="cuda",
         )
@@ -163,6 +163,7 @@ class HFQATTrainer:
             dataset_name=cfg.eval_dataset.name,
             dataset_subset=cfg.eval_dataset.subset,
             dataset_split=cfg.eval_dataset.split,
+            text_column=cfg.eval_dataset.text_column,
         )
         return {"perplexity": ppl}
 

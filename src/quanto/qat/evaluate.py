@@ -18,6 +18,7 @@ def compute_perplexity(
     dataset_subset: str | None = "wikitext-2-raw-v1",
     dataset_split: str = "test",
     stride: int = 512,
+    text_column: str = "text",
 ) -> float:
     """
     Compute perplexity using sliding window.
@@ -41,7 +42,7 @@ def compute_perplexity(
         device = next(model.parameters()).device
 
     testdata = load_dataset(dataset_name, dataset_subset, split=dataset_split)
-    test_text = "\n\n".join(testdata["text"])
+    test_text = "\n\n".join(item for item in testdata[text_column] if item)
     testenc = tokenizer(test_text, return_tensors="pt")
     test_ids = testenc.input_ids.to(device)
 

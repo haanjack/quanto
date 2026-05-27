@@ -216,7 +216,7 @@ def train_qat(
         weight_decay=weight_decay,
         warmup_ratio=warmup_ratio,
         bf16=True,
-        eval_strategy="epoch",
+        evaluation_strategy="epoch",
         save_strategy="no",
         save_total_limit=1,
         load_best_model_at_end=False,

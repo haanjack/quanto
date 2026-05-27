@@ -52,7 +52,10 @@ def _perturb_hyperparams(
         if not isinstance(value, (int, float)):
             continue
         factor = 1.0 + random.uniform(-perturbation_factor, perturbation_factor)
-        perturbed[name] = value * factor
+        perturbed_val = value * factor
+        if isinstance(value, int):
+            perturbed_val = round(perturbed_val)
+        perturbed[name] = perturbed_val
         if dim.min is not None:
             perturbed[name] = max(perturbed[name], dim.min)
         if dim.max is not None:
@@ -85,6 +88,8 @@ def _exploit_explore(
 
     for underperformer in bottom_performers:
         donor = random.choice(top_performers)
+        if underperformer.member_id == donor.member_id:
+            continue
 
         logger.info(
             f"Exploit: member {underperformer.member_id} cloning from "
@@ -225,7 +230,9 @@ def run_pbt(
                 trainer = trainer_factory(config)
 
                 try:
-                    trainer.initialize(member.hyperparams)
+                    trainer.initialize(
+                        member.hyperparams, is_resume=member.total_epochs_trained > 0
+                    )
 
                     checkpoint = None
                     if member.total_epochs_trained > 0:
