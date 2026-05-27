@@ -63,9 +63,8 @@ def get_template(model_type: str) -> LLMTemplate | None:
 
     # Try common mappings
     for key, template_name in MODEL_TYPE_MAPPINGS.items():
-        if key in model_type.lower():
-            if template_name in available_templates:
-                return LLMTemplate.get(template_name)
+        if key in model_type.lower() and template_name in available_templates:
+            return LLMTemplate.get(template_name)
 
     # Try partial match
     for template_name in available_templates:

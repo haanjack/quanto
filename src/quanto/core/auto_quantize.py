@@ -55,57 +55,90 @@ def main() -> int:
     parser.add_argument("--output_dir", type=str, required=True, help="Output directory")
 
     # Quantization settings
-    parser.add_argument("--precision", type=str, default="int4",
-                        choices=["int4", "int8", "fp8", "mxfp4", "mxfp6", "uint4"],
-                        help="Quantization precision (default: int4)")
-    parser.add_argument("--pack_int4", action=argparse.BooleanOptionalAction,
-                        default=True,
-                        help="Pack INT4 weights to INT32 (default: True)")
+    parser.add_argument(
+        "--precision",
+        type=str,
+        default="int4",
+        choices=["int4", "int8", "fp8", "mxfp4", "mxfp6", "uint4"],
+        help="Quantization precision (default: int4)",
+    )
+    parser.add_argument(
+        "--pack_int4",
+        action=argparse.BooleanOptionalAction,
+        default=True,
+        help="Pack INT4 weights to INT32 (default: True)",
+    )
 
     # Memory strategy
-    parser.add_argument("--memory_strategy", type=str, default="auto",
-                        choices=["full", "layerwise_cpu", "lazy", "auto"],
-                        help="Memory strategy (default: auto)")
+    parser.add_argument(
+        "--memory_strategy",
+        type=str,
+        default="auto",
+        choices=["full", "layerwise_cpu", "lazy", "auto"],
+        help="Memory strategy (default: auto)",
+    )
 
     # Export format
-    parser.add_argument("--export_format", type=str, default="quark",
-                        choices=["quark", "awq", "gptq"],
-                        help="Export format (default: quark)")
+    parser.add_argument(
+        "--export_format",
+        type=str,
+        default="quark",
+        choices=["quark", "awq", "gptq"],
+        help="Export format (default: quark)",
+    )
 
     # Calibration settings
-    parser.add_argument("--calibration_data", type=str, default="pileval",
-                        help="Calibration dataset (default: pileval)")
-    parser.add_argument("--num_calib_samples", type=int, default=128,
-                        help="Number of calibration samples (default: 128)")
-    parser.add_argument("--seq_len", type=int, default=512,
-                        help="Sequence length (default: 512)")
-    parser.add_argument("--batch_size", type=int, default=1,
-                        help="Batch size (default: 1)")
+    parser.add_argument(
+        "--calibration_data",
+        type=str,
+        default="pileval",
+        help="Calibration dataset (default: pileval)",
+    )
+    parser.add_argument(
+        "--num_calib_samples",
+        type=int,
+        default=128,
+        help="Number of calibration samples (default: 128)",
+    )
+    parser.add_argument("--seq_len", type=int, default=512, help="Sequence length (default: 512)")
+    parser.add_argument("--batch_size", type=int, default=1, help="Batch size (default: 1)")
 
     # Device
-    parser.add_argument("--device", type=str, default="cuda",
-                        help="Device (default: cuda)")
+    parser.add_argument("--device", type=str, default="cuda", help="Device (default: cuda)")
 
     # Layer exclusion
-    parser.add_argument("--exclude_layers", type=str, nargs="*", default=None,
-                        help="Layer patterns to exclude")
-    parser.add_argument("--aggressive_exclusion", action="store_true",
-                        help="Use aggressive layer exclusion")
+    parser.add_argument(
+        "--exclude_layers", type=str, nargs="*", default=None, help="Layer patterns to exclude"
+    )
+    parser.add_argument(
+        "--aggressive_exclusion", action="store_true", help="Use aggressive layer exclusion"
+    )
 
     # Sensitivity analysis
-    parser.add_argument("--sensitivity_analysis", action="store_true",
-                        help="Enable sensitivity analysis")
-    parser.add_argument("--sensitivity_threshold", type=float, default=0.0,
-                        help="Sensitivity threshold (default: 0.0, typical: 0.12-0.15)")
-    parser.add_argument("--max_iterations", type=int, default=10,
-                        help="Max iterations for sensitivity analysis (default: 10)")
+    parser.add_argument(
+        "--sensitivity_analysis", action="store_true", help="Enable sensitivity analysis"
+    )
+    parser.add_argument(
+        "--sensitivity_threshold",
+        type=float,
+        default=0.0,
+        help="Sensitivity threshold (default: 0.0, typical: 0.12-0.15)",
+    )
+    parser.add_argument(
+        "--max_iterations",
+        type=int,
+        default=10,
+        help="Max iterations for sensitivity analysis (default: 10)",
+    )
 
     # Other settings
-    parser.add_argument("--skip_evaluation", action="store_true",
-                        help="Skip perplexity evaluation")
-    parser.add_argument("--trust_remote_code", action=argparse.BooleanOptionalAction,
-                        default=True,
-                        help="Trust remote code (default: True)")
+    parser.add_argument("--skip_evaluation", action="store_true", help="Skip perplexity evaluation")
+    parser.add_argument(
+        "--trust_remote_code",
+        action=argparse.BooleanOptionalAction,
+        default=True,
+        help="Trust remote code (default: True)",
+    )
 
     args = parser.parse_args()
 
@@ -139,7 +172,7 @@ def main() -> int:
     result = quantizer.run()
 
     if result.success:
-        print(f"\nQuantization completed successfully!")
+        print("\nQuantization completed successfully!")
         print(f"Output: {result.output_dir}")
         if result.quantized_ppl:
             print(f"Perplexity: {result.quantized_ppl:.4f}")

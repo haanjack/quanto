@@ -355,7 +355,7 @@ class ModelDequantizer:
             # Load layer
             layer_weights = {}
             with safe_open(layer_file, framework="pt", device="cpu") as f:
-                for key in f.keys():
+                for key in f:
                     layer_weights[key] = f.get_tensor(key)
 
             # Calculate original size

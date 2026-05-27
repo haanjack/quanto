@@ -17,6 +17,7 @@ Usage:
 
 from __future__ import annotations
 
+import contextlib
 import gc
 import json
 import shutil
@@ -206,7 +207,7 @@ class HuggingFaceExporter:
 
         for layer_file in layer_files:
             with safe_open(layer_file, framework="pt", device="cpu") as f:
-                for key in f.keys():
+                for key in f:
                     metadata = f.metadata()
                     tensor_info[key] = {
                         "size": metadata[key]["data_offsets"][1] - metadata[key]["data_offsets"][0]
@@ -221,7 +222,7 @@ class HuggingFaceExporter:
             tensor_info = {}
             for layer_file in tqdm(layer_files, desc="Scanning tensors"):
                 with safe_open(layer_file, framework="pt", device="cpu") as f:
-                    for key in f.keys():
+                    for key in f:
                         tensor = f.get_tensor(key)
                         tensor_info[key] = {
                             "size": self._get_tensor_size(tensor),
@@ -261,7 +262,7 @@ class HuggingFaceExporter:
                     # Get size from file
                     sf_path = self.original_model_path / filename
                     with safe_open(sf_path, framework="pt", device="cpu") as f:
-                        if name in f.keys():
+                        if name in f:
                             tensor = f.get_tensor(name)
                             non_layer_info[name] = {
                                 "size": self._get_tensor_size(tensor),
@@ -275,7 +276,7 @@ class HuggingFaceExporter:
         if not weight_map_file:
             for sf_file in self.original_model_path.glob("model*.safetensors"):
                 with safe_open(sf_file, framework="pt", device="cpu") as f:
-                    for key in f.keys():
+                    for key in f:
                         for prefix in non_layer_prefixes:
                             if key.startswith(prefix):
                                 tensor = f.get_tensor(key)
@@ -449,10 +450,8 @@ class HuggingFaceExporter:
         if quant_scheme:
             parts = quant_scheme.split("_")
             if len(parts) >= 3:
-                try:
+                with contextlib.suppress(ValueError):
                     group_size = int(parts[-1])
-                except ValueError:
-                    pass
 
         # Ensure required config fields are present
         if "model_type" not in config:

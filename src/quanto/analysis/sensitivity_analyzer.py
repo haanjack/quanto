@@ -191,21 +191,22 @@ class SensitivityAnalyzer:
     def _collect_weight_metrics(self) -> None:
         """Collect weight quantization metrics from the model."""
         for name, module in self.model.named_modules():
-            if isinstance(module, FakeQuantizeBase):
-                if "weight_quantizer" in name or "bias_quantizer" in name:
-                    base_name = self._get_base_layer_name(name)
+            if isinstance(module, FakeQuantizeBase) and (
+                "weight_quantizer" in name or "bias_quantizer" in name
+            ):
+                base_name = self._get_base_layer_name(name)
 
-                    if base_name not in self._metrics:
-                        self._metrics[base_name] = LayerMetrics(
-                            name=base_name,
-                            layer_type="linear",
-                        )
+                if base_name not in self._metrics:
+                    self._metrics[base_name] = LayerMetrics(
+                        name=base_name,
+                        layer_type="linear",
+                    )
 
-                    # Check debug stats if available
-                    if name in self._debug_stats:
-                        stats = self._debug_stats[name]
-                        self._metrics[base_name].l1_error = stats.get("l1_error")
-                        self._metrics[base_name].shape = stats.get("shape")
+                # Check debug stats if available
+                if name in self._debug_stats:
+                    stats = self._debug_stats[name]
+                    self._metrics[base_name].l1_error = stats.get("l1_error")
+                    self._metrics[base_name].shape = stats.get("shape")
 
     def _collect_scale_metrics(self) -> None:
         """Collect scale statistics from quantizers."""
