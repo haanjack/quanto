@@ -229,8 +229,14 @@ def load_search_config(path: str | Path) -> QATSearchConfig:
     target = _parse_target(target_raw)
     tuner_config = _parse_tuner(tuner_raw)
 
+    model_path = model.get("model_path")
+    if not model_path:
+        raise ValueError(
+            "The 'model_path' field is required under the 'model' section in the config."
+        )
+
     return QATSearchConfig(
-        model_path=model["model_path"],
+        model_path=model_path,
         output_dir=model.get("output_dir", "./qat_output"),
         trust_remote_code=model.get("trust_remote_code", True),
         search_space=search_space,

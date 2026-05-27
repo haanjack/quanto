@@ -182,7 +182,11 @@ def train_qat(
     Returns:
         Trainer instance after training.
     """
-    if only_train_scaling_factor and precision == "int4":
+    if only_train_scaling_factor:
+        if precision != "int4":
+            raise ValueError(
+                "only_train_scaling_factor is currently only supported for 'int4' precision."
+            )
         print(f"[QAT] Before precompute: {torch.cuda.memory_allocated() / 1e9:.2f}GB", flush=True)
         freed = precompute_quantized_weights(model)
         print(

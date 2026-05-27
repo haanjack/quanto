@@ -105,7 +105,7 @@ class MixedDataset(Dataset):
                 ds = ds.select(range(max_samples))
 
             # Extract text and tokenize
-            texts = [item[text_column] for item in ds if item[text_column]]
+            texts = [item.get(text_column) for item in ds if item.get(text_column)]
             token_ids = _tokenize_texts(texts, tokenizer)
 
             block_ds = TokenBlockDataset(token_ids, seq_len)

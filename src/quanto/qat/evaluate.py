@@ -63,5 +63,7 @@ def compute_perplexity(
             nlls.append(neg_log_likelihood)
             prev_end = end
 
+    if seq_len == 0:
+        return float("inf")
     ppl = torch.exp(torch.stack(nlls).sum() / seq_len)
     return float(ppl)

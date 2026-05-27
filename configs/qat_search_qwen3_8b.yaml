@@ -1,6 +1,6 @@
 model:
-  model_path: /workspace/.cache/huggingface/hub/models--Qwen--Qwen3-8B/snapshots/b968826d9c46dd6066d109eabc6255188de91218
-  output_dir: /workspace/quanto/outputs/qwen3-8b-qat-search
+  model_path: "Qwen/Qwen3-8B"
+  output_dir: "./outputs/qwen3-8b-qat-search"
   trust_remote_code: true
 
 search_space:

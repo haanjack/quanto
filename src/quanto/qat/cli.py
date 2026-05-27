@@ -67,7 +67,7 @@ def main() -> int:
             print(f"Error: No search_summary.json found in {search_dir}", file=sys.stderr)
             return 1
 
-        with open(summary_path) as f:
+        with open(summary_path, encoding="utf-8") as f:
             summary = json.load(f)
 
         best_member_id = summary["best_member_id"]
