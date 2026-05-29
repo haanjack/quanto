@@ -293,6 +293,9 @@ def run_pbt(
                     )
 
                 except Exception as e:
+                    import traceback
+
+                    traceback.print_exc()
                     logger.error(f"Member {member.member_id} failed: {e}")
                     fallback = float("inf") if target.mode == "min" else float("-inf")
                     member.record_metric(fallback, target.mode)

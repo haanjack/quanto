@@ -211,29 +211,64 @@ def train_qat(
     # Instead, we use QATSaveCallback to save only the trainable scale parameters.
     callbacks.append(QATSaveCallback())
 
-    training_args = TrainingArguments(
-        output_dir=output_dir,
-        num_train_epochs=num_epochs,
-        per_device_train_batch_size=per_device_batch_size,
-        gradient_accumulation_steps=gradient_accumulation_steps,
-        learning_rate=learning_rate,
-        weight_decay=weight_decay,
-        warmup_ratio=warmup_ratio,
-        bf16=True,
-        evaluation_strategy="epoch",
-        save_strategy="no",
-        save_total_limit=1,
-        load_best_model_at_end=False,
-        metric_for_best_model="eval_loss",
-        logging_strategy="epoch",
-        report_to="none",
-        gradient_checkpointing=gradient_checkpointing,
-        gradient_checkpointing_kwargs={"use_reentrant": False},
-        dataloader_drop_last=True,
-        remove_unused_columns=False,
-        dataloader_num_workers=0,
-        torch_compile=False,
-    )
+    # eval_strategy was renamed in transformers 5.x (evaluation_strategy -> eval_strategy)
+    try:
+        training_args = TrainingArguments(
+            output_dir=output_dir,
+            num_train_epochs=num_epochs,
+            per_device_train_batch_size=per_device_batch_size,
+            gradient_accumulation_steps=gradient_accumulation_steps,
+            learning_rate=learning_rate,
+            weight_decay=weight_decay,
+            warmup_ratio=warmup_ratio,
+            bf16=True,
+            eval_strategy="epoch",
+            save_strategy="no",
+            save_total_limit=1,
+            load_best_model_at_end=False,
+            metric_for_best_model="eval_loss",
+            logging_strategy="steps",
+            logging_steps=50,
+            report_to="none",
+            gradient_checkpointing=gradient_checkpointing,
+            gradient_checkpointing_kwargs={"use_reentrant": False},
+            dataloader_drop_last=True,
+            remove_unused_columns=False,
+            dataloader_num_workers=0,
+            torch_compile=False,
+        )
+    except TypeError:
+        try:
+            training_args = TrainingArguments(
+                output_dir=output_dir,
+                num_train_epochs=num_epochs,
+                per_device_train_batch_size=per_device_batch_size,
+                gradient_accumulation_steps=gradient_accumulation_steps,
+                learning_rate=learning_rate,
+                weight_decay=weight_decay,
+                warmup_ratio=warmup_ratio,
+                bf16=True,
+                evaluation_strategy="epoch",
+                save_strategy="no",
+                save_total_limit=1,
+                load_best_model_at_end=False,
+                metric_for_best_model="eval_loss",
+                logging_strategy="steps",
+                logging_steps=50,
+                report_to="none",
+                gradient_checkpointing=gradient_checkpointing,
+                gradient_checkpointing_kwargs={"use_reentrant": False},
+                dataloader_drop_last=True,
+                remove_unused_columns=False,
+                dataloader_num_workers=0,
+                torch_compile=False,
+            )
+        except TypeError as e:
+            raise RuntimeError(
+                f"TrainingArguments initialization failed: {e}. "
+                "Please ensure you have a compatible version of transformers installed "
+                "(>=4.40 for evaluation_strategy, >=5.0 for eval_strategy)."
+            ) from e
 
     trainer = Trainer(
         model=model,
