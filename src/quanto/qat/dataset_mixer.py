@@ -94,7 +94,8 @@ class MixedDataset(Dataset):
             split = ds_spec.get("split", "train")
             text_column = ds_spec.get("text_column", "text")
 
-            hf_name, subset = _resolve_dataset_name(name)
+            hf_name, default_subset = _resolve_dataset_name(name)
+            subset = ds_spec.get("subset") or default_subset
             logger.info(f"Loading dataset: {name} (ratio={ratio:.2f})")
 
             ds = load_dataset(hf_name, subset, split=split)
