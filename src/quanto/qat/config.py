@@ -118,8 +118,22 @@ class QATSearchConfig:
                 k: {"choices": v.choices, "min": v.min, "max": v.max, "scale": v.scale}
                 for k, v in self.search_space.items()
             },
-            "train_datasets": [{"name": d.name, "ratio": d.ratio} for d in self.train_datasets],
-            "eval_dataset": {"name": self.eval_dataset.name, "split": self.eval_dataset.split},
+            "train_datasets": [
+                {
+                    "name": d.name,
+                    "ratio": d.ratio,
+                    "subset": d.subset,
+                    "split": d.split,
+                    "text_column": d.text_column,
+                }
+                for d in self.train_datasets
+            ],
+            "eval_dataset": {
+                "name": self.eval_dataset.name,
+                "subset": self.eval_dataset.subset,
+                "split": self.eval_dataset.split,
+                "text_column": self.eval_dataset.text_column,
+            },
             "seq_len": self.seq_len,
             "target": {
                 "metric": self.target.metric,
