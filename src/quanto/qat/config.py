@@ -7,7 +7,7 @@ datasets, target criteria, and tuner settings.
 
 from __future__ import annotations
 
-from dataclasses import dataclass, field
+from dataclasses import asdict, dataclass, field
 from pathlib import Path
 from typing import Any
 
@@ -110,38 +110,7 @@ class QATSearchConfig:
     export_weight_format: str = "real_quantized"
 
     def to_dict(self) -> dict[str, Any]:
-        return {
-            "model_path": self.model_path,
-            "output_dir": self.output_dir,
-            "trust_remote_code": self.trust_remote_code,
-            "search_space": {
-                k: {"choices": v.choices, "min": v.min, "max": v.max, "scale": v.scale}
-                for k, v in self.search_space.items()
-            },
-            "train_datasets": [
-                {
-                    "name": d.name,
-                    "ratio": d.ratio,
-                    "subset": d.subset,
-                    "split": d.split,
-                    "text_column": d.text_column,
-                }
-                for d in self.train_datasets
-            ],
-            "eval_dataset": {
-                "name": self.eval_dataset.name,
-                "subset": self.eval_dataset.subset,
-                "split": self.eval_dataset.split,
-                "text_column": self.eval_dataset.text_column,
-            },
-            "seq_len": self.seq_len,
-            "target": {
-                "metric": self.target.metric,
-                "mode": self.target.mode,
-                "threshold": self.target.threshold,
-                "max_trials": self.target.max_trials,
-            },
-        }
+        return asdict(self)
 
 
 def _parse_search_space(raw: dict[str, Any]) -> dict[str, SearchSpaceDimension]:
