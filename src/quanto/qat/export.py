@@ -74,8 +74,7 @@ def export_best_model(
         model_path,
         torch_dtype=torch.bfloat16,
         trust_remote_code=trust_remote_code,
-        device_map={"": 0},
-    )
+    ).to("cuda:0")
 
     # Apply fake quantization (same as training pipeline)
     from .quantize import apply_fake_quant

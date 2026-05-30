@@ -10,6 +10,7 @@ import random
 from typing import Any
 
 from .config import DatasetRatioSearchSpec, SearchSpaceDimension
+from .distributed import is_rank0
 from .population import PopulationMember
 
 logger = logging.getLogger(__name__)
@@ -51,18 +52,19 @@ def sample_initial_population(
     logger.info("Using random sampling for initial population")
 
     members = []
-    pop_dir = os.path.join(output_dir, "population")
-    os.makedirs(pop_dir, exist_ok=True)
+    if is_rank0():
+        pop_dir = os.path.join(output_dir, "population")
+        os.makedirs(pop_dir, exist_ok=True)
 
     for i in range(population_size):
         config = _sample_random(search_space, dataset_ratio_search)
 
-        checkpoint_dir = os.path.join(pop_dir, f"member_{i}")
-        os.makedirs(checkpoint_dir, exist_ok=True)
-
-        config_path = os.path.join(checkpoint_dir, "hyperparams.json")
-        with open(config_path, "w") as f:
-            json.dump(config, f, indent=2, default=str)
+        checkpoint_dir = os.path.join(output_dir, "population", f"member_{i}")
+        if is_rank0():
+            os.makedirs(checkpoint_dir, exist_ok=True)
+            config_path = os.path.join(checkpoint_dir, "hyperparams.json")
+            with open(config_path, "w") as f:
+                json.dump(config, f, indent=2, default=str)
 
         members.append(
             PopulationMember(

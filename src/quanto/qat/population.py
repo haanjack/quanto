@@ -11,6 +11,8 @@ import shutil
 from dataclasses import dataclass, field
 from typing import Any
 
+from .distributed import is_rank0
+
 logger = logging.getLogger(__name__)
 
 
@@ -64,7 +66,10 @@ def clone_checkpoint(src_member: PopulationMember, dst_member: PopulationMember)
 
     Only copies files on disk, not GPU memory.
     The recipient loads the checkpoint on its next train_segment call.
+    Only rank 0 should call this.
     """
+    if not is_rank0():
+        return
     if os.path.exists(dst_member.checkpoint_path):
         shutil.rmtree(dst_member.checkpoint_path)
 
@@ -82,7 +87,9 @@ def save_population_state(
     round_num: int,
     state_path: str,
 ) -> None:
-    """Save population state for resume."""
+    """Save population state for resume. Only rank 0 writes."""
+    if not is_rank0():
+        return
     state = {
         "round": round_num,
         "population": [m.to_dict() for m in population],

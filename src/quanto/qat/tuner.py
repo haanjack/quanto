@@ -2,7 +2,8 @@
 Trainer-agnostic PBT (Population-Based Training) hyperparameter tuner.
 
 Replaces the Ray Tune integration. Runs population members sequentially
-on a single GPU, with exploit/explore at configurable intervals.
+on a single GPU (or in lockstep across DDP ranks), with exploit/explore
+at configurable intervals.
 """
 
 from __future__ import annotations
@@ -17,6 +18,7 @@ from collections.abc import Callable
 from typing import Any
 
 from .config import QATSearchConfig
+from .distributed import is_distributed, is_rank0, local_rank
 from .population import (
     PopulationMember,
     clone_checkpoint,
@@ -96,18 +98,20 @@ def _exploit_explore(
             f"member {donor.member_id} (best_metric={donor.best_metric:.4f})"
         )
 
-        # Copy checkpoint files
-        clone_checkpoint(donor, underperformer)
+        # Copy checkpoint files (rank 0 only)
+        if is_rank0():
+            clone_checkpoint(donor, underperformer)
 
         # Explore: perturb hyperparams from donor
         underperformer.hyperparams = _perturb_hyperparams(
             donor.hyperparams, search_space, perturbation_factor
         )
 
-        # Save updated hyperparams
-        config_path = os.path.join(underperformer.checkpoint_path, "hyperparams.json")
-        with open(config_path, "w") as f:
-            json.dump(underperformer.hyperparams, f, indent=2, default=str)
+        # Save updated hyperparams (rank 0 only)
+        if is_rank0():
+            config_path = os.path.join(underperformer.checkpoint_path, "hyperparams.json")
+            with open(config_path, "w") as f:
+                json.dump(underperformer.hyperparams, f, indent=2, default=str)
 
         underperformer.finished = False
 
@@ -173,7 +177,19 @@ def run_pbt(
     exploit_interval = tuner_cfg.exploit_interval
 
     os.makedirs(config.output_dir, exist_ok=True)
+    if is_distributed():
+        import torch
+        import torch.distributed
+
+        torch.cuda.set_device(local_rank())
+        if not torch.distributed.is_initialized():
+            torch.distributed.init_process_group(backend="nccl")
+        torch.distributed.barrier()
     state_path = os.path.join(config.output_dir, "pbt_state.json")
+
+    # Synchronize random seed so all DDP ranks produce identical
+    # hyperparams and perturbations
+    random.seed(42)
 
     # Load or create population
     if resume and os.path.exists(state_path):
@@ -218,12 +234,16 @@ def run_pbt(
                     f"{member.total_epochs_trained + exploit_interval})"
                 )
 
-                # Create per-member metric sinks
-                sinks = build_sinks(
-                    member_id=member.member_id,
-                    tracking_config=tuner_cfg.tracking,
-                    output_dir=config.output_dir,
-                    hyperparams=member.hyperparams,
+                # Create per-member metric sinks (rank 0 only to avoid file conflicts)
+                sinks = (
+                    build_sinks(
+                        member_id=member.member_id,
+                        tracking_config=tuner_cfg.tracking,
+                        output_dir=config.output_dir,
+                        hyperparams=member.hyperparams,
+                    )
+                    if is_rank0()
+                    else []
                 )
                 metric_callback = MetricCallback(sinks=sinks)
 
@@ -313,14 +333,16 @@ def run_pbt(
                 )
 
             # Phase 3: Save state
-            save_population_state(population, round_num, state_path)
+            if is_rank0():
+                save_population_state(population, round_num, state_path)
 
             # Phase 4: Log round summary
             _log_round_summary(population, round_num, target)
 
     except KeyboardInterrupt:
         logger.info("PBT interrupted, saving state...")
-        save_population_state(population, round_num, state_path)
+        if is_rank0():
+            save_population_state(population, round_num, state_path)
 
     # Finalize
     summary = _finalize(population, config, best_overall, best_config, round_num)
@@ -389,18 +411,19 @@ def _finalize(
     }
 
     summary_path = os.path.join(config.output_dir, "search_summary.json")
-    with open(summary_path, "w") as f:
-        json.dump(summary, f, indent=2, default=str)
+    if is_rank0():
+        with open(summary_path, "w") as f:
+            json.dump(summary, f, indent=2, default=str)
 
     logger.info(f"Search summary saved to {summary_path}")
     logger.info(f"Best {target.metric}: {best_overall:.4f}")
     logger.info(f"Target met: {target_met}")
 
-    # Export best model as real-quantized safetensors
+    # Export best model as real-quantized safetensors (rank 0 only)
     export_dir = os.path.join(config.output_dir, "best_model")
     scales_path = os.path.join(best_member.checkpoint_path, "scales.pt")
 
-    if os.path.exists(scales_path):
+    if is_rank0() and os.path.exists(scales_path):
         try:
             from .export import export_best_model
 
@@ -419,12 +442,13 @@ def _finalize(
             logger.error(f"Export failed: {e}")
             summary["exported"] = False
             summary["export_error"] = str(e)
-    else:
+    elif is_rank0():
         logger.warning(f"No scales.pt found at {scales_path}, skipping export")
         summary["exported"] = False
 
     # Re-save summary with export status
-    with open(summary_path, "w") as f:
-        json.dump(summary, f, indent=2, default=str)
+    if is_rank0():
+        with open(summary_path, "w") as f:
+            json.dump(summary, f, indent=2, default=str)
 
     return summary

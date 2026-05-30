@@ -15,6 +15,7 @@ import os
 import sys
 
 from .config import load_search_config
+from .distributed import is_distributed, is_rank0
 from .sampler import sample_initial_population
 from .trial import HFQATTrainer
 from .tuner import run_pbt
@@ -59,6 +60,10 @@ def main() -> int:
     )
 
     config = load_search_config(args.config)
+
+    # Export and dry-run are single-process — only rank 0 runs them
+    if is_distributed() and not is_rank0() and (args.export_best or args.dry_run):
+        return 0
 
     if args.export_best:
         search_dir = args.search_dir or config.output_dir
@@ -116,11 +121,12 @@ def main() -> int:
 
     summary = run_pbt(config, trainer_factory, resume=args.resume)
 
-    print("\n=== Search Complete ===")
-    print(f"Total rounds: {summary.get('total_rounds', 0)}")
-    print(f"Target met: {summary.get('target_met', False)}")
-    print(f"Exported: {summary.get('exported', False)}")
-    print(f"Best config: {json.dumps(summary.get('best_config', {}), indent=2, default=str)}")
+    if is_rank0():
+        print("\n=== Search Complete ===")
+        print(f"Total rounds: {summary.get('total_rounds', 0)}")
+        print(f"Target met: {summary.get('target_met', False)}")
+        print(f"Exported: {summary.get('exported', False)}")
+        print(f"Best config: {json.dumps(summary.get('best_config', {}), indent=2, default=str)}")
 
     return 0
 
