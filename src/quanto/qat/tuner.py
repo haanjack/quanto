@@ -339,6 +339,12 @@ def run_pbt(
             # Phase 4: Log round summary
             _log_round_summary(population, round_num, target)
 
+            # Phase 5: Sync before next round
+            if is_distributed():
+                import torch.distributed
+
+                torch.distributed.barrier()
+
     except KeyboardInterrupt:
         logger.info("PBT interrupted, saving state...")
         if is_rank0():

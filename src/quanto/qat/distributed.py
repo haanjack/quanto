@@ -26,4 +26,4 @@ def is_distributed() -> bool:
 
 
 def is_rank0() -> bool:
-    return local_rank() == 0
+    return rank() == 0
