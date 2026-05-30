@@ -35,11 +35,7 @@ def compute_perplexity(
         Perplexity score (float).
     """
     model.eval()
-    if hasattr(model, "hf_device_map"):
-        first_device = next(iter(model.hf_device_map.values()))
-        device = torch.device(first_device)
-    else:
-        device = next(model.parameters()).device
+    device = next(model.parameters()).device
 
     testdata = load_dataset(dataset_name, dataset_subset, split=dataset_split)
     test_text = "\n\n".join(item for item in testdata[text_column] if item)

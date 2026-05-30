@@ -236,6 +236,7 @@ def train_qat(
             remove_unused_columns=False,
             dataloader_num_workers=0,
             torch_compile=False,
+            ddp_find_unused_parameters=True,
         )
     except TypeError:
         try:
@@ -262,6 +263,7 @@ def train_qat(
                 remove_unused_columns=False,
                 dataloader_num_workers=0,
                 torch_compile=False,
+                ddp_find_unused_parameters=True,
             )
         except TypeError as e:
             raise RuntimeError(

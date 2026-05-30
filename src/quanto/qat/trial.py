@@ -16,6 +16,7 @@ from transformers import AutoModelForCausalLM, AutoTokenizer
 
 from .config import QATSearchConfig
 from .dataset_mixer import MixedDataset, normalize_ratios
+from .distributed import is_rank0, local_rank, world_size
 from .evaluate import compute_perplexity
 from .quantize import apply_fake_quant
 from .train import train_qat
@@ -51,12 +52,12 @@ class HFQATTrainer:
         if self.tokenizer.pad_token is None:
             self.tokenizer.pad_token = self.tokenizer.eos_token
 
+        torch.cuda.set_device(local_rank())
         self.model = AutoModelForCausalLM.from_pretrained(
             cfg.model_path,
             torch_dtype=torch.bfloat16,
             trust_remote_code=cfg.trust_remote_code,
-            device_map={"": 0},
-        )
+        ).to(f"cuda:{local_rank()}")
 
         # Apply fake quantization (PTQ)
         precision = sampled_config.get("precision", "int4")
@@ -81,7 +82,7 @@ class HFQATTrainer:
             calibration_dataset=sampled_config.get("calibration_dataset", "wikitext"),
             num_calib_samples=1 if is_resume else sampled_config.get("num_calib_samples", 128),
             seq_len=cfg.seq_len,
-            device="cuda",
+            device=f"cuda:{local_rank()}",
         )
 
         gc.collect()
@@ -126,6 +127,30 @@ class HFQATTrainer:
             self.search_config.output_dir, "trials", self.trial_id
         )
 
+        # Compute gradient_accumulation_steps from global_batch_size
+        per_device_bs = hyperparams.get("per_device_train_batch_size", 1)
+        ws = world_size()
+        if "global_batch_size" in hyperparams:
+            gbs = hyperparams["global_batch_size"]
+            denom = per_device_bs * ws
+            if gbs < denom:
+                logger.warning(
+                    f"global_batch_size={gbs} < per_device_bs*world_size={denom}, "
+                    f"clamping gradient_accumulation_steps to 1"
+                )
+                grad_accum = 1
+            elif gbs % denom != 0:
+                grad_accum = gbs // denom
+                logger.warning(
+                    f"global_batch_size={gbs} not divisible by "
+                    f"per_device_bs*world_size={denom}, "
+                    f"rounding down to gradient_accumulation_steps={grad_accum}"
+                )
+            else:
+                grad_accum = gbs // denom
+        else:
+            grad_accum = hyperparams.get("gradient_accumulation_steps", 4)
+
         self.trainer = train_qat(
             model=self.model,
             tokenizer=self.tokenizer,
@@ -133,8 +158,8 @@ class HFQATTrainer:
             eval_dataset=self.eval_dataset,
             learning_rate=hyperparams.get("learning_rate", 2e-5),
             num_epochs=num_epochs,
-            per_device_batch_size=hyperparams.get("per_device_train_batch_size", 1),
-            gradient_accumulation_steps=hyperparams.get("gradient_accumulation_steps", 4),
+            per_device_batch_size=per_device_bs,
+            gradient_accumulation_steps=grad_accum,
             weight_decay=hyperparams.get("weight_decay", 0.0),
             warmup_ratio=hyperparams.get("warmup_ratio", 0.0),
             gradient_checkpointing=True,
@@ -168,6 +193,8 @@ class HFQATTrainer:
         return {"perplexity": ppl}
 
     def save_checkpoint(self, path: str) -> None:
+        if not is_rank0():
+            return
         os.makedirs(path, exist_ok=True)
 
         # Save trainable scales
