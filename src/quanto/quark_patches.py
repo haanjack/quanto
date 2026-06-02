@@ -37,7 +37,7 @@ def _register_deepseek_v4_template() -> None:
         exclude_layers_name=[
             "head",
             "embed",
-            "*attn*",  # All attention layers (CSA/HCA are sensitive)
+            "*attn.wo*",  # Attention output projections (CSA/HCA are sensitive)
             "*ffn.gate",  # MoE router gates
             "*norm*",  # RMS norms
             "*hc_*",  # Hyper-connection residual parameters
