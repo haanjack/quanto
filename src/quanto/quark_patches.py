@@ -37,10 +37,10 @@ def _register_deepseek_v4_template() -> None:
         exclude_layers_name=[
             "head",
             "embed",
-            "*attn*",       # All attention layers (CSA/HCA are sensitive)
-            "*ffn.gate",    # MoE router gates
-            "*norm*",       # RMS norms
-            "*hc_*",        # Hyper-connection residual parameters
+            "*attn*",  # All attention layers (CSA/HCA are sensitive)
+            "*ffn.gate",  # MoE router gates
+            "*norm*",  # RMS norms
+            "*hc_*",  # Hyper-connection residual parameters
         ],
     )
     LLMTemplate.register_template(template)
@@ -68,6 +68,7 @@ def _patch_recover_fp8_weights() -> None:
         scale_inv_cache=None,
     ):
         import os
+
         import torch
         from safetensors import safe_open
 
@@ -104,6 +105,7 @@ def _patch_recover_fp8_weights() -> None:
                 # Axis=-1: 32 FP4 elements per scale block along columns
                 try:
                     from quark.torch.kernel.mx.triton import upcast_from_mxfp
+
                     return upcast_from_mxfp(
                         weight.view(torch.uint8).to(dev),
                         scale.view(torch.uint8).to(dev),
@@ -113,6 +115,7 @@ def _patch_recover_fp8_weights() -> None:
                     ).contiguous()
                 except Exception:
                     from quark.torch.kernel.mx.triton import upcast_from_mxfp_torch
+
                     return upcast_from_mxfp_torch(
                         weight.view(torch.uint8),
                         scale.view(torch.uint8),
@@ -122,8 +125,7 @@ def _patch_recover_fp8_weights() -> None:
 
             else:
                 raise ValueError(
-                    f"Unsupported weight dtype for DeepSeek-V4 dequantization: "
-                    f"{weight.dtype}"
+                    f"Unsupported weight dtype for DeepSeek-V4 dequantization: {weight.dtype}"
                 )
 
         recovered_tensors: dict = {}
@@ -138,41 +140,34 @@ def _patch_recover_fp8_weights() -> None:
                 if weight_name.endswith("_scale_inv"):
                     continue
                 # Skip DeepSeek-V4 sibling .scale tensors
-                if (
-                    weight_name.endswith(".scale")
-                    and weight_name[:-6] + ".weight" in all_keys
-                ):
+                if weight_name.endswith(".scale") and weight_name[:-6] + ".weight" in all_keys:
                     continue
 
                 scale_inv_name = f"{weight_name}_scale_inv"
                 # DeepSeek-V4 sibling scale: "layers.N.X.weight" -> "layers.N.X.scale"
                 dsv4_scale_name = (
-                    weight_name[:-7] + ".scale"
-                    if weight_name.endswith(".weight")
-                    else None
+                    weight_name[:-7] + ".scale" if weight_name.endswith(".weight") else None
                 )
 
                 if _is_linear(weight_name):
                     if scale_inv_name in all_keys:
                         weight = f.get_tensor(weight_name)
                         scale_inv = f.get_tensor(scale_inv_name)
-                        recovered_tensors[weight_name] = _dequant(weight, scale_inv)
+                        recovered_tensors[weight_name] = _dequant_fp8(weight, scale_inv)
                         fp8_weight_count += 1
                         del weight, scale_inv
                         _empty_cache(device)
                     elif dsv4_scale_name is not None and dsv4_scale_name in all_keys:
                         weight = f.get_tensor(weight_name)
                         scale = f.get_tensor(dsv4_scale_name)
-                        recovered_tensors[weight_name] = _dequant_dsv4(
-                            weight, scale, device
-                        )
+                        recovered_tensors[weight_name] = _dequant_dsv4(weight, scale, device)
                         fp8_weight_count += 1
                         del weight, scale
                         _empty_cache(device)
                     elif scale_inv_cache is not None and scale_inv_name in scale_inv_cache:
                         weight = f.get_tensor(weight_name)
                         scale_inv = scale_inv_cache[scale_inv_name].to(device)
-                        recovered_tensors[weight_name] = _dequant(weight, scale_inv)
+                        recovered_tensors[weight_name] = _dequant_fp8(weight, scale_inv)
                         fp8_weight_count += 1
                         del weight, scale_inv
                         _empty_cache(device)
@@ -191,8 +186,7 @@ def _patch_recover_fp8_weights() -> None:
                     recovered_tensors[weight_name] = f.get_tensor(weight_name)
 
         f2f.logger.info(
-            f"Dequantized {fp8_weight_count} FP8 weights, "
-            f"total tensors: {len(recovered_tensors)}"
+            f"Dequantized {fp8_weight_count} FP8 weights, total tensors: {len(recovered_tensors)}"
         )
         return recovered_tensors
 

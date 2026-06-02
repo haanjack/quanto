@@ -31,10 +31,8 @@ from quark.torch import LLMTemplate, ModelQuantizer
 from quark.torch.quantization.config.config import Int4PerGroupSpec, QConfig, QLayerConfig
 from transformers import AutoConfig, AutoTokenizer
 
-from ..constants import PRECISION_TO_SCHEME, SUPPORTED_PRECISIONS
+from ..constants import PRECISION_TO_SCHEME
 from ..quark_patches import apply_patches as _apply_quark_patches
-
-_apply_quark_patches()
 from ..utils import (
     clear_gpu_memory,
     detect_model_type,
@@ -47,6 +45,8 @@ from .base_quantizer import QuantizationResult
 from .config import UnifiedConfig
 from .sensitivity import SequentialSensitivityAnalyzer
 from .sensitivity.scorer import SensitivityMetric
+
+_apply_quark_patches()
 
 
 class UnifiedQuantizer:
@@ -978,8 +978,6 @@ class UnifiedQuantizer:
             self._log("\n=== Assembling HuggingFace format ===")
             self._assemble_hf_format()
 
-
-
             self.timing["total"] = time.time() - total_start
 
             result.success = True
@@ -1283,8 +1281,6 @@ class UnifiedQuantizer:
 
             self.tokenizer.save_pretrained(self.config.output_dir)
 
-
-
             self.timing["total"] = time.time() - total_start
 
             result.success = True
@@ -1301,6 +1297,7 @@ class UnifiedQuantizer:
             result.error_message = str(e)
             self._log(f"Error during quantization: {e}")
             import traceback
+
             traceback.print_exc()
 
         return result
