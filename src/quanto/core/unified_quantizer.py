@@ -31,7 +31,10 @@ from quark.torch import LLMTemplate, ModelQuantizer
 from quark.torch.quantization.config.config import Int4PerGroupSpec, QConfig, QLayerConfig
 from transformers import AutoConfig, AutoTokenizer
 
-from ..constants import PRECISION_TO_SCHEME
+from ..constants import PRECISION_TO_SCHEME, SUPPORTED_PRECISIONS
+from ..quark_patches import apply_patches as _apply_quark_patches
+
+_apply_quark_patches()
 from ..utils import (
     clear_gpu_memory,
     detect_model_type,
@@ -194,7 +197,7 @@ class UnifiedQuantizer:
             )
             if self.tokenizer.pad_token is None:
                 self.tokenizer.pad_token = self.tokenizer.eos_token
-        except (ValueError, KeyError, OSError) as e:
+        except (ValueError, KeyError, OSError, AttributeError) as e:
             self._log(f"AutoTokenizer failed ({e.__class__.__name__}), skipping tokenizer")
             self.tokenizer = None
 

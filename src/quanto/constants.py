@@ -40,6 +40,7 @@ MODEL_TYPE_MAPPINGS: dict[str, str] = {
     "mistral": "mistral",
     "mixtral": "mixtral",
     "deepseek": "deepseek",
+    "deepseek_v4": "deepseek_v4",
     "gemma": "gemma2",
     "gemma2": "gemma2",
     "gemma3": "gemma2",
