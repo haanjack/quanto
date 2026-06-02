@@ -50,7 +50,7 @@ def main() -> int:
         sys.argv = [sys.argv[0]] + remaining
         return qat_main()
     else:
-        # Run quantization
+        # Default: quantization mode
         from quanto.core.auto_quantize import main as quant_main
 
         return quant_main()

@@ -343,8 +343,6 @@ class SequentialSensitivityAnalyzer:
         """
         from quark.torch import ModelQuantizer
 
-        from ...constants import PRECISION_TO_SCHEME
-
         quant_config = self._build_quant_config_for_scoring()
 
         # Quantize

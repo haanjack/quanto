@@ -24,6 +24,10 @@ ruff check src/                      # lint
 ruff check src/ --fix                # lint with autofix
 ruff format src/                     # format
 
+# Pre-commit (enforced via .git/hooks/pre-commit)
+# Always run before committing changes to src/:
+ruff check <changed files> && ruff format --check <changed files>
+
 # Quantize a model (CLI)
 python -m quanto \
     --model_path model/path \

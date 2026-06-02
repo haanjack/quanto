@@ -178,6 +178,7 @@ class UnifiedConfig:
                 f"Supported precisions: {supported_precisions}"
             )
 
+
     def to_dict(self) -> dict[str, Any]:
         """Convert configuration to dictionary."""
         return {
