@@ -32,7 +32,7 @@ def unfuse_gate_up(tensor: torch.Tensor):
     e, two_n, k = tensor.shape
     n = two_n // 2
     gate = tensor[:, :n, :]  # First half = gate
-    up = tensor[:, n:, :]    # Second half = up
+    up = tensor[:, n:, :]  # Second half = up
     return gate, up
 
 
@@ -48,6 +48,7 @@ def main():
         dst = os.path.join(dst_dir, fname)
         if os.path.isfile(src) and not fname.endswith(".safetensors"):
             import shutil
+
             shutil.copy2(src, dst)
 
     safetensors_files = sorted(glob.glob(os.path.join(src_dir, "model-*.safetensors")))
@@ -60,56 +61,74 @@ def main():
         fname = os.path.basename(fpath)
         out_tensors = {}
 
-        with safe_open(fpath, framework="pt", device="cpu") as f:
-            keys = sorted(f.keys())
-            for key in keys:
-                tensor = f.get_tensor(key)
+        # load_file copies tensors into memory; safe_open tensors are invalid
+        # outside the context manager (segfault on access).
+        from safetensors.torch import load_file
 
-                if "experts.gate_up_proj" in key and tensor.dim() == 3:
-                    # Unfuse gate_up_proj or gate_up_proj_scale
-                    is_scale = key.endswith("_scale")
-                    gate, up = unfuse_gate_up(tensor)
-                    num_experts = tensor.shape[0]
+        tensors = load_file(fpath)
+        keys = sorted(tensors.keys())
+        for key in keys:
+            tensor = tensors[key]
 
-                    base = key.rsplit("experts.gate_up_proj", 1)[0]
-                    suffix = key.rsplit("experts.gate_up_proj", 1)[1]  # "" or "_scale"
+            if "experts.gate_up_proj" in key and tensor.dim() == 3:
+                # Unfuse gate_up_proj or gate_up_proj_scale
+                gate, up = unfuse_gate_up(tensor)
+                num_experts = tensor.shape[0]
 
-                    for expert_id in range(num_experts):
-                        if is_scale:
-                            gate_name = f"{base}experts.{expert_id}.gate_proj.weight_scale"
-                            up_name = f"{base}experts.{expert_id}.up_proj.weight_scale"
-                        else:
-                            gate_name = f"{base}experts.{expert_id}.gate_proj.weight"
-                            up_name = f"{base}experts.{expert_id}.up_proj.weight"
+                base = key.rsplit("experts.gate_up_proj", 1)[0]
+                suffix = key.rsplit("experts.gate_up_proj", 1)[1]
 
-                        out_tensors[gate_name] = gate[expert_id].contiguous()
-                        out_tensors[up_name] = up[expert_id].contiguous()
-                        total_new += 2
+                for expert_id in range(num_experts):
+                    if suffix == "_scale":
+                        gate_name = f"{base}experts.{expert_id}.gate_proj.weight_scale"
+                        up_name = f"{base}experts.{expert_id}.up_proj.weight_scale"
+                    elif suffix == ".weight.packed":
+                        gate_name = f"{base}experts.{expert_id}.gate_proj.weight.packed"
+                        up_name = f"{base}experts.{expert_id}.up_proj.weight.packed"
+                    elif suffix == ".weight.scale_e8m0":
+                        gate_name = f"{base}experts.{expert_id}.gate_proj.weight.scale_e8m0"
+                        up_name = f"{base}experts.{expert_id}.up_proj.weight.scale_e8m0"
+                    elif suffix == "":
+                        gate_name = f"{base}experts.{expert_id}.gate_proj.weight"
+                        up_name = f"{base}experts.{expert_id}.up_proj.weight"
+                    else:
+                        gate_name = f"{base}experts.{expert_id}.gate_proj{suffix}"
+                        up_name = f"{base}experts.{expert_id}.up_proj{suffix}"
 
-                    total_unfused += 1
-                    print(f"  unfused: {key} [{num_experts} experts] → gate_proj + up_proj")
+                    out_tensors[gate_name] = gate[expert_id].contiguous()
+                    out_tensors[up_name] = up[expert_id].contiguous()
+                    total_new += 2
 
-                elif "experts.down_proj" in key and tensor.dim() == 3:
-                    # Unfuse down_proj or down_proj_scale
-                    is_scale = key.endswith("_scale")
-                    num_experts = tensor.shape[0]
+                total_unfused += 1
+                print(f"  unfused: {key} [{num_experts} experts] → gate_proj + up_proj")
 
-                    base = key.rsplit("experts.down_proj", 1)[0]
+            elif "experts.down_proj" in key and tensor.dim() == 3:
+                # Unfuse down_proj or down_proj_scale
+                num_experts = tensor.shape[0]
 
-                    for expert_id in range(num_experts):
-                        if is_scale:
-                            name = f"{base}experts.{expert_id}.down_proj.weight_scale"
-                        else:
-                            name = f"{base}experts.{expert_id}.down_proj.weight"
+                base = key.rsplit("experts.down_proj", 1)[0]
+                suffix = key.rsplit("experts.down_proj", 1)[1]
 
-                        out_tensors[name] = tensor[expert_id].contiguous()
-                        total_new += 1
+                for expert_id in range(num_experts):
+                    if suffix == "_scale":
+                        name = f"{base}experts.{expert_id}.down_proj.weight_scale"
+                    elif suffix == ".weight.packed":
+                        name = f"{base}experts.{expert_id}.down_proj.weight.packed"
+                    elif suffix == ".weight.scale_e8m0":
+                        name = f"{base}experts.{expert_id}.down_proj.weight.scale_e8m0"
+                    elif suffix == "":
+                        name = f"{base}experts.{expert_id}.down_proj.weight"
+                    else:
+                        name = f"{base}experts.{expert_id}.down_proj{suffix}"
 
-                    total_unfused += 1
-                    print(f"  unfused: {key} [{num_experts} experts] → down_proj")
+                    out_tensors[name] = tensor[expert_id].contiguous()
+                    total_new += 1
 
-                else:
-                    out_tensors[key] = tensor
+                total_unfused += 1
+                print(f"  unfused: {key} [{num_experts} experts] → down_proj")
+
+            else:
+                out_tensors[key] = tensor
 
         out_path = os.path.join(dst_dir, fname)
         save_file(out_tensors, out_path)

@@ -1612,11 +1612,11 @@ class UnifiedQuantizer:
             if not shard_path.exists():
                 continue
 
-            # Load all tensors from this shard
-            tensors = {}
-            with safe_open(str(shard_path), framework="pt", device="cpu") as f:
-                for key in f:
-                    tensors[key] = f.get_tensor(key)
+            # Load all tensors from this shard into memory
+            # (safe_open tensors are invalid after the context exits — must load_file)
+            from safetensors.torch import load_file
+
+            tensors = load_file(str(shard_path))
 
             # Pack eligible weights
             new_tensors = {}

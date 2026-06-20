@@ -64,18 +64,21 @@ def main():
         fname = os.path.basename(fpath)
         out_tensors = {}
 
-        with safe_open(fpath, framework="pt", device="cpu") as f:
-            keys = sorted(f.keys())
-            for key in keys:
-                tensor = f.get_tensor(key)
+        # load_file copies tensors into memory; safe_open tensors are invalid
+        # outside the context manager (segfault on access).
+        from safetensors.torch import load_file
 
-                # Convert gate_up_proj and its scale (3D fused expert tensors)
-                if "gate_up_proj" in key and tensor.dim() == 3:
-                    out_tensors[key] = contiguous_to_interleaved(tensor)
-                    converted += 1
-                    print(f"  interleaved: {key} {list(tensor.shape)}")
-                else:
-                    out_tensors[key] = tensor
+        tensors = load_file(fpath)
+        for key in sorted(tensors.keys()):
+            tensor = tensors[key]
+
+            # Convert gate_up_proj and its scale (3D fused expert tensors)
+            if "gate_up_proj" in key and tensor.dim() == 3:
+                out_tensors[key] = contiguous_to_interleaved(tensor)
+                converted += 1
+                print(f"  interleaved: {key} {list(tensor.shape)}")
+            else:
+                out_tensors[key] = tensor
 
         out_path = os.path.join(dst_dir, fname)
         save_file(out_tensors, out_path)

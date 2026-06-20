@@ -15,32 +15,32 @@ FP4 E2M1 representable values (magnitude):
 
 from __future__ import annotations
 
-import math
-
 import torch
-
 
 # FP4 E2M1 encoding: 4-bit code -> float value
 # Bit layout: [sign(1)] [exponent(1)] [mantissa(2)]
 # Code 0b_s_e_mm
-FP4_E2M1_TABLE = torch.tensor([
-    0.0,    # 0b0_0_00 = 0
-    0.5,    # 0b0_0_01 = 0.5
-    1.0,    # 0b0_0_10 = 1.0
-    1.5,    # 0b0_0_11 = 1.5
-    2.0,    # 0b0_1_00 = 2.0
-    3.0,    # 0b0_1_01 = 3.0
-    4.0,    # 0b0_1_10 = 4.0
-    6.0,    # 0b0_1_11 = 6.0
-    -0.0,   # 0b1_0_00 = -0 (treated as 0)
-    -0.5,   # 0b1_0_01 = -0.5
-    -1.0,   # 0b1_0_10 = -1.0
-    -1.5,   # 0b1_0_11 = -1.5
-    -2.0,   # 0b1_1_00 = -2.0
-    -3.0,   # 0b1_1_01 = -3.0
-    -4.0,   # 0b1_1_10 = -4.0
-    -6.0,   # 0b1_1_11 = -6.0
-], dtype=torch.float32)
+FP4_E2M1_TABLE = torch.tensor(
+    [
+        0.0,  # 0b0_0_00 = 0
+        0.5,  # 0b0_0_01 = 0.5
+        1.0,  # 0b0_0_10 = 1.0
+        1.5,  # 0b0_0_11 = 1.5
+        2.0,  # 0b0_1_00 = 2.0
+        3.0,  # 0b0_1_01 = 3.0
+        4.0,  # 0b0_1_10 = 4.0
+        6.0,  # 0b0_1_11 = 6.0
+        -0.0,  # 0b1_0_00 = -0 (treated as 0)
+        -0.5,  # 0b1_0_01 = -0.5
+        -1.0,  # 0b1_0_10 = -1.0
+        -1.5,  # 0b1_0_11 = -1.5
+        -2.0,  # 0b1_1_00 = -2.0
+        -3.0,  # 0b1_1_01 = -3.0
+        -4.0,  # 0b1_1_10 = -4.0
+        -6.0,  # 0b1_1_11 = -6.0
+    ],
+    dtype=torch.float32,
+)
 
 # Max representable magnitude in FP4 E2M1
 FP4_MAX = 6.0
@@ -82,9 +82,10 @@ def compute_e8m0_scales(weight: torch.Tensor, group_size: int = 32) -> torch.Ten
     # Avoid log2(0) — use a small floor
     group_max = group_max.clamp(min=1e-12)
 
-    # E8M0 exponent: floor(log2(group_max / FP4_MAX)) + 127 (IEEE bias)
-    # scale = 2^(code - 127), so code = floor(log2(group_max / FP4_MAX)) + 127
-    exponent = torch.floor(torch.log2(group_max / FP4_MAX)).to(torch.int32) + 127
+    # E8M0 exponent: ceil(log2(group_max / FP4_MAX)) + 127 (IEEE bias)
+    # scale = 2^(code - 127), so code = ceil(log2(group_max / FP4_MAX)) + 127
+    # ceil (not floor) guarantees scale >= group_max / FP4_MAX, preventing overflow
+    exponent = torch.ceil(torch.log2(group_max / FP4_MAX)).to(torch.int32) + 127
 
     # Clamp to valid E8M0 range [0, 254] (255 = NaN/Inf in E8M0)
     exponent = exponent.clamp(0, 254)

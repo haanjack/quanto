@@ -1,4 +1,5 @@
 """Dequantize MXFP4 packed expert weights back to BF16 for quality verification."""
+
 import glob
 import json
 import os
@@ -48,7 +49,7 @@ def dequant_mxfp4_to_bf16(weight_uint8: torch.Tensor, scale_uint8: torch.Tensor)
     fp4_values = fp4_lut[unpacked]  # [N, K] float32
 
     # Decode E8M0 scales: value = 2^(e - 127)
-    scale_float = (2.0 ** (flat_s.to(torch.float32) - 127.0))  # [N, K//32]
+    scale_float = 2.0 ** (flat_s.to(torch.float32) - 127.0)  # [N, K//32]
 
     # Each scale covers 32 elements (BLOCK_QUANT_DIM=32)
     # Repeat scale to match weight dimensions
@@ -92,26 +93,30 @@ def main():
         print(f"\n  {fname}...")
         out_tensors = {}
 
-        with safe_open(fpath, framework="pt", device="cpu") as f:
-            keys = set(f.keys())
-            for key in sorted(keys):
-                # Skip scale tensors (handled with their weight)
-                if key.endswith("_scale"):
-                    continue
+        # load_file copies tensors into memory; safe_open tensors are invalid
+        # outside the context manager (segfault on access).
+        from safetensors.torch import load_file
 
-                tensor = f.get_tensor(key)
-                scale_key = key + "_scale"
+        tensors = load_file(fpath)
+        keys = set(tensors.keys())
+        for key in sorted(keys):
+            # Skip scale tensors (handled with their weight)
+            if key.endswith("_scale"):
+                continue
 
-                if tensor.dtype == torch.uint8 and scale_key in keys:
-                    # This is a quantized weight — dequantize
-                    scale = f.get_tensor(scale_key)
-                    dequantized = dequant_mxfp4_to_bf16(tensor, scale)
-                    out_tensors[key] = dequantized
-                    total_dequant += 1
-                    print(f"    dequant: {key} {list(tensor.shape)} → {list(dequantized.shape)}")
-                else:
-                    out_tensors[key] = tensor
-                    total_kept += 1
+            tensor = tensors[key]
+            scale_key = key + "_scale"
+
+            if tensor.dtype == torch.uint8 and scale_key in keys:
+                # This is a quantized weight — dequantize
+                scale = tensors[scale_key]
+                dequantized = dequant_mxfp4_to_bf16(tensor, scale)
+                out_tensors[key] = dequantized
+                total_dequant += 1
+                print(f"    dequant: {key} {list(tensor.shape)} → {list(dequantized.shape)}")
+            else:
+                out_tensors[key] = tensor
+                total_kept += 1
 
         out_path = os.path.join(dst_dir, fname)
         save_file(out_tensors, out_path)

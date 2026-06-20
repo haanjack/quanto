@@ -2,8 +2,8 @@
 
 from __future__ import annotations
 
-import torch
 import pytest
+import torch
 
 from quanto.utils.mxfp4_pack import (
     FP4_E2M1_TABLE,
@@ -12,7 +12,6 @@ from quanto.utils.mxfp4_pack import (
     e8m0_to_float,
     pack_fp4_to_uint8,
     pack_mxfp4,
-    quantize_to_fp4,
     unpack_mxfp4,
     unpack_uint8_to_fp4,
 )
@@ -46,16 +45,23 @@ class TestE8M0Scales:
         weight = torch.tensor([[1.0, 2.0, 3.0, -1.0] * 8])  # max=3.0
         scales = compute_e8m0_scales(weight, group_size=32)
         scale_float = e8m0_to_float(scales)
-        # scale = 2^floor(log2(3.0 / 6.0)) = 2^floor(-1) = 2^(-1) = 0.5
+        # scale = 2^ceil(log2(3.0 / 6.0)) = 2^ceil(-1) = 2^(-1) = 0.5
         assert scale_float[0, 0].item() == pytest.approx(0.5)
+
+        # Test value that would overflow with floor but is correct with ceil
+        weight_overflow = torch.tensor([[3.1] * 32])
+        scales_overflow = compute_e8m0_scales(weight_overflow, group_size=32)
+        scale_float_overflow = e8m0_to_float(scales_overflow)
+        # scale = 2^ceil(log2(3.1 / 6.0)) = 2^ceil(-0.95) = 2^0 = 1.0
+        assert scale_float_overflow[0, 0].item() == pytest.approx(1.0)
 
     def test_large_values(self):
         """Large values should produce larger scales."""
         weight = torch.tensor([[100.0] * 32])
         scales = compute_e8m0_scales(weight, group_size=32)
         scale_float = e8m0_to_float(scales)
-        # scale = 2^floor(log2(100/6)) = 2^floor(4.06) = 2^4 = 16
-        assert scale_float[0, 0].item() == pytest.approx(16.0)
+        # scale = 2^ceil(log2(100/6)) = 2^ceil(4.06) = 2^5 = 32
+        assert scale_float[0, 0].item() == pytest.approx(32.0)
 
     def test_small_values(self):
         """Small values should produce smaller scales."""
@@ -79,7 +85,9 @@ class TestFP4Packing:
 
     def test_pack_unpack_roundtrip(self):
         """Pack then unpack should recover original codes."""
-        codes = torch.tensor([[0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15]], dtype=torch.uint8)
+        codes = torch.tensor(
+            [[0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15]], dtype=torch.uint8
+        )
         packed = pack_fp4_to_uint8(codes)
         assert packed.shape == (1, 8)
         unpacked = unpack_uint8_to_fp4(packed)
@@ -167,20 +175,24 @@ class TestConfigIntegration:
 
     def test_rtn_default(self):
         from quanto.core.config import UnifiedConfig
+
         config = UnifiedConfig(model_path="/tmp/test", output_dir="/tmp/out")
         assert config.algorithm == "rtn"
 
     def test_awq_algorithm(self):
         from quanto.core.config import UnifiedConfig
+
         config = UnifiedConfig(model_path="/tmp/test", output_dir="/tmp/out", algorithm="awq")
         assert config.algorithm == "awq"
 
     def test_gptq_algorithm(self):
         from quanto.core.config import UnifiedConfig
+
         config = UnifiedConfig(model_path="/tmp/test", output_dir="/tmp/out", algorithm="gptq")
         assert config.algorithm == "gptq"
 
     def test_invalid_algorithm(self):
         from quanto.core.config import UnifiedConfig
+
         with pytest.raises(ValueError, match="Invalid algorithm"):
             UnifiedConfig(model_path="/tmp/test", output_dir="/tmp/out", algorithm="invalid")
