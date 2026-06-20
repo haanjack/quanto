@@ -89,14 +89,14 @@ def main():
         import json
 
         weight_map = {}
-        total_size = 0
         for fpath in sorted(glob.glob(os.path.join(dst_dir, "model-*.safetensors"))):
             fname = os.path.basename(fpath)
             with safe_open(fpath, framework="pt", device="cpu") as f:
-                for key in f.keys():
-                    t = f.get_tensor(key)
+                for key in f:
                     weight_map[key] = fname
-                    total_size += t.numel() * t.element_size()
+        total_size = sum(
+            os.path.getsize(fp) for fp in glob.glob(os.path.join(dst_dir, "model-*.safetensors"))
+        )
         index = {"metadata": {"total_size": total_size}, "weight_map": weight_map}
         with open(index_path, "w") as f:
             json.dump(index, f, indent=2, ensure_ascii=False)

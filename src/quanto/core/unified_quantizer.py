@@ -296,11 +296,17 @@ class UnifiedQuantizer:
         # Exclude MoE router gates (not gate_proj FFN layers)
         exclude.append("*.gate")
 
-        # MXFP4/MXFP6: exclude attention and shared experts for vLLM compatibility.
-        # vLLM's QuarkOCP_MX weight loader expects these layers in bf16 while
-        # only MoE expert weights are packed as MXFP4 uint8.
+        # MXFP4/MXFP6: exclude attention and shared experts for vLLM MoE compatibility.
+        # vLLM's QuarkOCP_MX_MoEMethod expects these layers in bf16 while
+        # only MoE expert weights are packed as MXFP4 uint8. Dense models don't
+        # have this limitation and should quantize attention layers for compression.
         if self.config.precision.startswith("mxfp"):
-            exclude.extend(["*self_attn*", "*shared_expert*"])
+            is_moe = (
+                getattr(self.hf_config, "num_local_experts", 0) > 0
+                or getattr(self.hf_config, "num_experts", 0) > 0
+            )
+            if is_moe:
+                exclude.extend(["*self_attn*", "*shared_expert*"])
 
         if self.config.aggressive_exclusion:
             exclude.extend(["*gate*"])
@@ -1598,8 +1604,15 @@ class UnifiedQuantizer:
         import fnmatch
 
         def is_excluded(name: str) -> bool:
+            # Strip standard parameter suffixes so patterns match layer names,
+            # not raw parameter keys. This also avoids substring false positives
+            # (e.g., pattern "gate" matching "gate_proj.weight").
+            for suffix in (".weight", ".bias", ".weight_scale", ".packed", ".scale_e8m0"):
+                if name.endswith(suffix):
+                    name = name[: -len(suffix)]
+                    break
             for pattern in exclude_layers:
-                if fnmatch.fnmatch(name, pattern) or pattern in name:
+                if fnmatch.fnmatch(name, pattern) or pattern == name:
                     return True
             return False
 
@@ -1633,19 +1646,16 @@ class UnifiedQuantizer:
                     # Strip .weight suffix to get layer name
                     layer_name = key[: -len(".weight")]
 
-                    # Check if this layer was actually quantized (not in exclude)
-                    layer_excluded = is_excluded(layer_name)
-                    if not layer_excluded:
-                        packed = pack_mxfp4(tensor, group_size=group_size)
-                        packed_key = f"{layer_name}.weight.packed"
-                        scale_key = f"{layer_name}.weight.scale_e8m0"
+                    packed = pack_mxfp4(tensor, group_size=group_size)
+                    packed_key = f"{layer_name}.weight.packed"
+                    scale_key = f"{layer_name}.weight.scale_e8m0"
 
-                        new_tensors[packed_key] = packed["weight.packed"]
-                        new_tensors[scale_key] = packed["weight.scale_e8m0"]
-                        new_weight_map_updates[packed_key] = shard_name
-                        new_weight_map_updates[scale_key] = shard_name
-                        total_packed += 1
-                        continue
+                    new_tensors[packed_key] = packed["weight.packed"]
+                    new_tensors[scale_key] = packed["weight.scale_e8m0"]
+                    new_weight_map_updates[packed_key] = shard_name
+                    new_weight_map_updates[scale_key] = shard_name
+                    total_packed += 1
+                    continue
 
                 # Keep non-quantized tensors as-is
                 new_tensors[key] = tensor
