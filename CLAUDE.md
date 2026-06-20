@@ -75,7 +75,7 @@ python -m quanto --dequantize --model_path ./quantized --output_dir ./dequantize
 - `lazy` — weights loaded on-demand from safetensors
 
 ### Core modules (`src/quanto/core/`)
-- **`config.py`** — `UnifiedConfig` dataclass. Key fields: `precision`, `memory_strategy`, `algorithm` (rtn/awq/gptq), `sensitivity_analysis`, `sensitivity_threshold`, `exclude_layers`.
+- **`config.py`** — `UnifiedConfig` dataclass. Key fields: `precision`, `memory_strategy`, `algorithm` (rtn/awq/gptq), `sensitivity_analysis`, `sensitivity_threshold`, `exclude_layers`, `pack_mxfp4`.
 - **`unified_quantizer.py`** — Main quantizer. `run()` dispatches to `_run_file2file_quantization()` for MXFP or `_run_full_gpu_quantization()` / `_run_lazy_quantization()` for INT4/INT8. Contains `_determine_exclude_layers()` with sensitivity analysis and `_align_exclude_groups()` for vLLM fused layer compatibility.
 - **`sensitivity/sequential_analyzer.py`** — Iterative sensitivity analysis. Scores each layer using the actual target precision (MXFP4 uses `OCP_MXFP4Spec`, not INT4 proxy). `_build_quant_config_for_scoring()` maps precision to the correct Quark spec class.
 
@@ -85,6 +85,7 @@ python -m quanto --dequantize --model_path ./quantized --output_dir ./dequantize
 - **`utils/model_utils.py`** — `detect_model_type()` and `get_template()` for Quark `LLMTemplate` lookup.
 - **`utils/calibration.py`** — `CalibrationDataManager` loads from HuggingFace datasets or local files.
 - **`utils/int4_pack.py`** — INT4 <-> INT32 packing/unpacking.
+- **`utils/mxfp4_pack.py`** — MXFP4 packing to FP4 + E8M0 scale format.
 
 ### External dependency
 AMD Quark is vendored as a git submodule in `contribs/quark/`. Key Quark APIs used:
@@ -111,6 +112,9 @@ AMD Quark is vendored as a git submodule in `contribs/quark/`. Key Quark APIs us
 - **Sensitivity analysis algorithm-awareness**: `SequentialSensitivityAnalyzer._build_quant_config_for_scoring()` passes actual algorithm (not RTN proxy) to `LLMTemplate.get_config()` for correct Quark spec (critical for AWQ/GPTQ accuracy)
 - **Backward compat aliases**: `QuantizationConfig = UnifiedConfig`, `AutoQuantizer = UnifiedQuantizer`
 - **HF hub resolution**: File2file path auto-resolves HF hub IDs to local cache via `snapshot_download`
+- **Valid precisions**: `int4`, `int4_64`, `int4_32`, `int8`, `fp8`, `mxfp4`, `mxfp6`, `uint4`
+- **Memory strategies**: `full`, `layerwise_cpu`, `lazy`, `auto`
+- **Export formats**: `quark` (native, default), `awq`, `gptq` (vLLM compat, INT4 only)
 
 ## Testing environment
 

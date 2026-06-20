@@ -296,6 +296,18 @@ class UnifiedQuantizer:
         # Exclude MoE router gates (not gate_proj FFN layers)
         exclude.append("*.gate")
 
+        # MXFP4/MXFP6: exclude attention and shared experts for vLLM MoE compatibility.
+        # vLLM's QuarkOCP_MX_MoEMethod expects these layers in bf16 while
+        # only MoE expert weights are packed as MXFP4 uint8. Dense models don't
+        # have this limitation and should quantize attention layers for compression.
+        if self.config.precision.startswith("mxfp"):
+            is_moe = (
+                getattr(self.hf_config, "num_local_experts", 0) > 0
+                or getattr(self.hf_config, "num_experts", 0) > 0
+            )
+            if is_moe:
+                exclude.extend(["*self_attn*", "*shared_expert*"])
+
         if self.config.aggressive_exclusion:
             exclude.extend(["*gate*"])
 
@@ -978,6 +990,11 @@ class UnifiedQuantizer:
             self._log("\n=== Assembling HuggingFace format ===")
             self._assemble_hf_format()
 
+            # Pack MXFP4 weights for actual compression
+            if self.config.precision.startswith("mxfp") and self.config.pack_mxfp4:
+                self._log("Packing MXFP4 weights...")
+                self._pack_mxfp4_weights(exclude_layers)
+
             self.timing["total"] = time.time() - total_start
 
             result.success = True
@@ -1281,6 +1298,11 @@ class UnifiedQuantizer:
 
             self.tokenizer.save_pretrained(self.config.output_dir)
 
+            # Pack MXFP4 weights for actual compression
+            if self.config.precision.startswith("mxfp") and self.config.pack_mxfp4:
+                self._log("Packing MXFP4 weights...")
+                self._pack_mxfp4_weights(exclude_layers)
+
             self.timing["total"] = time.time() - total_start
 
             result.success = True
@@ -1363,6 +1385,10 @@ class UnifiedQuantizer:
             self.timing["quantization"] = time.time() - quant_start
             self._log(f"File-to-file quantization completed in {self.timing['quantization']:.2f}s")
 
+            # Post-process config.json with vLLM-compatible quantization_config
+            self._log("Writing vLLM-compatible quantization config...")
+            self._patch_output_config(exclude_layers)
+
             self.timing["total"] = time.time() - total_start
 
             result.success = True
@@ -1386,57 +1412,280 @@ class UnifiedQuantizer:
 
     def _add_quantization_config(self, exclude_layers: list[str] | None = None) -> None:
         """Add quantization_config to hf_config for Quark/vLLM compatibility."""
-        quant_scheme = self._get_quant_scheme()
-        group_size = 64 if "64" in quant_scheme else 128
-
-        # Determine dtype for quantization config
         precision = self.config.precision
-        if precision.startswith("int4"):
-            weight_dtype = "int4"
-        elif precision.startswith("int8"):
-            weight_dtype = "int8"
-        elif precision == "fp8":
-            weight_dtype = "fp8"
-        elif precision == "mxfp4":
-            weight_dtype = "mxfp4"
-        elif precision == "mxfp6":
-            weight_dtype = "mxfp6"
-        else:
-            weight_dtype = precision
+        is_mxfp = precision.startswith("mxfp")
 
-        quantization_config = {
-            "quant_method": "quark",
-            "quant_mode": "eager_mode",
-            "global_quant_config": {
-                "weight": {
-                    "dtype": weight_dtype,
-                    "qscheme": "per_group",
-                    "group_size": group_size,
-                    "ch_axis": -1,
-                    "is_dynamic": False,
-                    "symmetric": True,
-                    "scale_type": "float",
-                    "is_scale_quant": False,
-                    "observer_cls": "PerGroupMinMaxObserver",
-                    "round_method": "half_even",
+        if is_mxfp:
+            # MXFP4/MXFP6: OCP MX format with E8M0 block scales
+            # vLLM's QuarkOCP_MX requires input_tensors with is_dynamic=true
+            weight_dtype = "fp4" if precision == "mxfp4" else "fp6_e3m2"
+            mx_spec = {
+                "dtype": weight_dtype,
+                "is_dynamic": False,
+                "qscheme": "per_group",
+                "ch_axis": -1,
+                "group_size": 32,
+                "symmetric": None,
+                "round_method": "half_even",
+                "scale_type": "float",
+                "scale_format": "e8m0",
+                "scale_calculation_mode": "even",
+                "mx_element_dtype": None,
+                "observer_cls": "PerBlockMXObserver",
+                "is_scale_quant": False,
+            }
+            input_spec = {**mx_spec, "is_dynamic": True}
+            quantization_config = {
+                "quant_method": "quark",
+                "quant_mode": "eager_mode",
+                "global_quant_config": {
+                    "weight": mx_spec,
+                    "input_tensors": input_spec,
+                    "output_tensors": None,
+                    "bias": None,
+                    "target_device": None,
                 },
-                "input_tensors": None,
-                "output_tensors": None,
-                "bias": None,
-            },
-            "kv_cache_quant_config": {},
-            "layer_quant_config": {},
-            "layer_type_quant_config": {},
-            "exclude": exclude_layers or [],
-            "export": {
-                "kv_cache_group": [],
-                "min_kv_scale": 0.0,
-                "pack_method": "reorder",
-                "weight_format": "real_quantized",
-                "weight_merge_groups": None,
-            },
-        }
+                "kv_cache_quant_config": {},
+                "layer_quant_config": {},
+                "layer_type_quant_config": {},
+                "exclude": exclude_layers or [],
+                "export": {
+                    "kv_cache_group": [],
+                    "min_kv_scale": 0.0,
+                    "pack_method": "reorder",
+                    "weight_format": "real_quantized",
+                    "weight_merge_groups": None,
+                },
+            }
+        else:
+            # INT4/INT8/FP8: standard Quark format
+            quant_scheme = self._get_quant_scheme()
+            group_size = 64 if "64" in quant_scheme else 128
+            if precision.startswith("int4"):
+                weight_dtype = "int4"
+            elif precision.startswith("int8"):
+                weight_dtype = "int8"
+            elif precision == "fp8":
+                weight_dtype = "fp8"
+            else:
+                weight_dtype = precision
+            quantization_config = {
+                "quant_method": "quark",
+                "quant_mode": "eager_mode",
+                "global_quant_config": {
+                    "weight": {
+                        "dtype": weight_dtype,
+                        "qscheme": "per_group",
+                        "group_size": group_size,
+                        "ch_axis": -1,
+                        "is_dynamic": False,
+                        "symmetric": True,
+                        "scale_type": "float",
+                        "is_scale_quant": False,
+                        "observer_cls": "PerGroupMinMaxObserver",
+                        "round_method": "half_even",
+                    },
+                    "input_tensors": None,
+                    "output_tensors": None,
+                    "bias": None,
+                },
+                "kv_cache_quant_config": {},
+                "layer_quant_config": {},
+                "layer_type_quant_config": {},
+                "exclude": exclude_layers or [],
+                "export": {
+                    "kv_cache_group": [],
+                    "min_kv_scale": 0.0,
+                    "pack_method": "reorder",
+                    "weight_format": "real_quantized",
+                    "weight_merge_groups": None,
+                },
+            }
         self.hf_config.quantization_config = quantization_config
+
+    def _patch_output_config(self, exclude_layers: list[str]) -> None:
+        """Patch the output config.json with vLLM-compatible quantization_config.
+
+        Quark's quantize_model_per_safetensor writes its own config.json, but
+        the quantization_config it produces may not match what vLLM expects
+        (e.g. missing input_tensors for MXFP4). This rewrites it.
+
+        Also expands glob patterns in exclude_layers to concrete layer names
+        since vLLM's Quark loader only supports exact-match or ``re:`` prefixed
+        regex patterns, not shell globs.
+        """
+        config_file = Path(self.config.output_dir) / "config.json"
+        if not config_file.exists():
+            self._log("Warning: No config.json in output, skipping patch")
+            return
+
+        # Expand glob patterns to concrete layer names from safetensors index
+        expanded = self._expand_exclude_globs(exclude_layers)
+        self._log(
+            f"Expanded exclude list: {len(exclude_layers)} patterns -> {len(expanded)} layers"
+        )
+
+        with open(config_file) as f:
+            config = json.load(f)
+
+        self._add_quantization_config(expanded)
+        config["quantization_config"] = self.hf_config.quantization_config
+
+        with open(config_file, "w") as f:
+            json.dump(config, f, indent=2, ensure_ascii=False)
+
+        self._log("Patched config.json with vLLM-compatible quantization_config")
+
+    def _expand_exclude_globs(self, exclude_layers: list[str]) -> list[str]:
+        """Expand glob patterns in exclude_layers to concrete layer names.
+
+        vLLM's Quark loader uses exact-match (or ``re:`` regex), not shell
+        globs.  We read the safetensors index to resolve patterns like
+        ``*self_attn*`` into ``model.layers.0.self_attn.q_proj``, etc.
+        """
+        import fnmatch
+
+        # Separate concrete names from glob patterns
+        concrete = [e for e in exclude_layers if "*" not in e]
+        globs = [e for e in exclude_layers if "*" in e]
+        if not globs:
+            return exclude_layers
+
+        # Read weight names from safetensors index
+        index_file = Path(self.config.output_dir) / "model.safetensors.index.json"
+        if not index_file.exists():
+            self._log("Warning: No safetensors index, cannot expand globs")
+            return exclude_layers
+
+        with open(index_file) as f:
+            index = json.load(f)
+        all_keys = list(index.get("weight_map", {}).keys())
+
+        # Extract unique layer prefixes (strip .weight / .weight_scale suffixes)
+        layer_names: set[str] = set()
+        for key in all_keys:
+            for suffix in (".weight_scale", ".weight"):
+                if key.endswith(suffix):
+                    layer_names.add(key[: -len(suffix)])
+                    break
+
+        # Expand each glob against layer names
+        expanded: set[str] = set(concrete)
+        for pattern in globs:
+            matched = [name for name in layer_names if fnmatch.fnmatch(name, pattern)]
+            expanded.update(matched)
+
+        return sorted(expanded)
+
+    def _pack_mxfp4_weights(self, exclude_layers: list[str]) -> None:
+        """
+        Post-process exported safetensors to pack MXFP4 weights.
+
+        Replaces BF16 dequantized weights with packed FP4 + E8M0 scale format
+        for actual compression. Only processes quantized Linear weights
+        (those NOT in the exclude list).
+        """
+        from ..utils.mxfp4_pack import pack_mxfp4
+
+        output_dir = Path(self.config.output_dir)
+        index_file = output_dir / "model.safetensors.index.json"
+
+        if not index_file.exists():
+            self._log("Warning: No safetensors index found, skipping MXFP4 packing")
+            return
+
+        with open(index_file) as f:
+            index = json.load(f)
+
+        weight_map = index.get("weight_map", {})
+        group_size = 32  # MXFP4 default group size
+
+        # Identify quantizable weight keys (2D weights not in exclude list)
+        import fnmatch
+
+        def is_excluded(name: str) -> bool:
+            # Strip standard parameter suffixes so patterns match layer names,
+            # not raw parameter keys. This also avoids substring false positives
+            # (e.g., pattern "gate" matching "gate_proj.weight").
+            for suffix in (".weight", ".bias", ".weight_scale", ".packed", ".scale_e8m0"):
+                if name.endswith(suffix):
+                    name = name[: -len(suffix)]
+                    break
+            for pattern in exclude_layers:
+                if fnmatch.fnmatch(name, pattern) or pattern == name:
+                    return True
+            return False
+
+        # Group weights by shard file
+        shard_files = set(weight_map.values())
+        total_packed = 0
+
+        for shard_name in sorted(shard_files):
+            shard_path = output_dir / shard_name
+            if not shard_path.exists():
+                continue
+
+            # Load all tensors from this shard into memory
+            # (safe_open tensors are invalid after the context exits — must load_file)
+            from safetensors.torch import load_file
+
+            tensors = load_file(str(shard_path))
+
+            # Pack eligible weights
+            new_tensors = {}
+            new_weight_map_updates = {}
+
+            for key, tensor in tensors.items():
+                # Check if this is a quantizable Linear weight
+                if (
+                    key.endswith(".weight")
+                    and len(tensor.shape) == 2
+                    and not is_excluded(key)
+                    and tensor.shape[-1] % 2 == 0  # Must be even for packing
+                ):
+                    # Strip .weight suffix to get layer name
+                    layer_name = key[: -len(".weight")]
+
+                    packed = pack_mxfp4(tensor, group_size=group_size)
+                    packed_key = f"{layer_name}.weight.packed"
+                    scale_key = f"{layer_name}.weight.scale_e8m0"
+
+                    new_tensors[packed_key] = packed["weight.packed"]
+                    new_tensors[scale_key] = packed["weight.scale_e8m0"]
+                    new_weight_map_updates[packed_key] = shard_name
+                    new_weight_map_updates[scale_key] = shard_name
+                    total_packed += 1
+                    continue
+
+                # Keep non-quantized tensors as-is
+                new_tensors[key] = tensor
+
+            # Re-save shard with packed weights
+            save_file(new_tensors, str(shard_path))
+
+            # Update weight map
+            for old_key in list(weight_map.keys()):
+                if weight_map[old_key] == shard_name and old_key not in new_tensors:
+                    del weight_map[old_key]
+            weight_map.update(new_weight_map_updates)
+
+        # Save updated index
+        index["weight_map"] = weight_map
+        with open(index_file, "w") as f:
+            json.dump(index, f, indent=2)
+
+        # Update config.json with packed format info
+        config_file = output_dir / "config.json"
+        if config_file.exists():
+            with open(config_file) as f:
+                config = json.load(f)
+            if "quantization_config" in config:
+                config["quantization_config"]["weight_format"] = "packed_mxfp4"
+                config["quantization_config"]["mxfp4_group_size"] = group_size
+            with open(config_file, "w") as f:
+                json.dump(config, f, indent=2)
+
+        self._log(f"Packed {total_packed} weight tensors to MXFP4 format")
 
     def _print_summary(self, result: QuantizationResult) -> None:
         """Print quantization summary."""

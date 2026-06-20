@@ -406,8 +406,6 @@ class SequentialSensitivityAnalyzer:
 
             spec = Int4PerGroupSpec(ch_axis=0, group_size=128).to_quantization_spec()
 
-        # Note: algorithm parameter (if needed by Quark) would be passed here
-        # Currently Quark's fallback configs don't take algorithm parameter
         return QConfig(
             global_quant_config=QLayerConfig(weight=spec),
         )
